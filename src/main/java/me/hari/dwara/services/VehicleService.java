@@ -64,8 +64,14 @@ public class VehicleService {
         }
 
         User user = userContainer.get();
-        Vehicle vehicle = VehicleMapper.updationRequestToVehicle(user, dto);
+        Optional<Vehicle> vehicleContainer = vehicleRepository.findById(dto.vehicleId());
+        if (vehicleContainer.isEmpty()) {
+            return ResponseObject.failure("Vehicle does not exist.");
+        }
 
+        Vehicle vehicle = vehicleContainer.get();
+
+        VehicleMapper.updationRequestToVehicle(vehicle,  dto);
         vehicleRepository.save(vehicle);
 
         return ResponseObject.success("Vehicle updated successfully.", null);

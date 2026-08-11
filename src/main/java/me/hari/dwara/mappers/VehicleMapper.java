@@ -36,11 +36,8 @@ public class VehicleMapper {
         return vehicle;
     }
 
-    public static Vehicle updationRequestToVehicle(User user, VehicleUpdationRequestDto dto) {
-        Vehicle vehicle = new Vehicle();
-        vehicle.setUser(user);
+    public static void updationRequestToVehicle(Vehicle vehicle, VehicleUpdationRequestDto dto) {
         vehicle.setNumberPlate(dto.numberPlate());
         vehicle.setVehicleType(dto.vehicleType());
-        return vehicle;
     }
 }
