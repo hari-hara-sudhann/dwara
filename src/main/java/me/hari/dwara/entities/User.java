@@ -3,7 +3,7 @@ package me.hari.dwara.entities;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
-import me.hari.dwara.entities.enums.Role;
+import me.hari.dwara.entities.enums.UserRole;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -26,7 +26,7 @@ public class User {
     private String passwordHash;
 
     @Enumerated(EnumType.STRING)
-    private Role role;
+    private UserRole userRole;
 
     private Instant createdAt;
 
