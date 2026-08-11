@@ -24,7 +24,7 @@ public class UserService {
 
     public ResponseObject<RegisrationSuccessDto> register(RegistrationDto dto) {
         if (userRepository.existsByEmail(dto.getEmail())) {
-            return new ResponseObject<>(false, "User already exists.", null);
+            return ResponseObject.failure("User already exists.");
         }
 
         User newUser = new User();
@@ -39,19 +39,19 @@ public class UserService {
         userRepository.save(newUser);
 
         var response = UserMapper.toRegistrationSuccessDto(newUser);
-        return new ResponseObject<>(true, "Registered successfully.", response);
+        return ResponseObject.success( "Registered successfully.", response);
     }
 
     public ResponseObject<LoginResponseDto> login(LoginRequestDto dto) {
         User user = userRepository.findByEmail(dto.getEmail());
         if (user == null || !verify(dto.getPassword(), user.getPasswordHash())) {
-            return new ResponseObject<>(false, "Invalid credentials.", null);
+            return ResponseObject.failure("Invalid credentials.");
         }
 
         String jwt = jwtService.generateToken(user.getUserId());
         LoginResponseDto res = new LoginResponseDto(jwt);
 
-        return new ResponseObject<>(true, "Login successful.", res);
+        return ResponseObject.success( "Login successful.", res);
     }
 
     private boolean verify(String raw, String hashed) {

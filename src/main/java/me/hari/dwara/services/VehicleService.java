@@ -24,7 +24,7 @@ public class VehicleService {
         Optional<User> userContainer = userRepository.findById(dto.userId());
 
         if (userContainer.isEmpty()) {
-            return new ResponseObject<VehicleCreatedDto>(false, "User not found.", null);
+            return ResponseObject.failure("User does not exist.");
         }
 
         User user = userContainer.get();
@@ -33,8 +33,7 @@ public class VehicleService {
 
         vehicleRepository.save(vehicle);
 
-        return new ResponseObject<>(
-                true,
+        return ResponseObject.success(
                 "Vehicle created successfully",
                 VehicleMapper.toVehicleCreatedDto(vehicle)
         );
@@ -43,7 +42,7 @@ public class VehicleService {
     public ResponseObject<VehicleDetailsDto> findVehiclesByUser(UUID userId) {
         boolean userExists = userRepository.existsById(userId);
         if (!userExists) {
-            return new ResponseObject<>(false, "User does not exist", null);
+            return ResponseObject.failure("User does not exist.");
         }
 
         List<Vehicle> vehicles = vehicleRepository.findAllByUser_UserId(userId);
@@ -61,7 +60,7 @@ public class VehicleService {
         Optional<User> userContainer = userRepository.findById(dto.userId());
 
         if (userContainer.isEmpty()) {
-            return new ResponseObject<>(false, "User does not exist", null);
+            return ResponseObject.failure("User does not exist");
         }
 
         User user = userContainer.get();
@@ -69,7 +68,7 @@ public class VehicleService {
 
         vehicleRepository.save(vehicle);
 
-        return new ResponseObject<>(true, "Vehicle successfully updated.", null);
+        return ResponseObject.success("Vehicle updated successfully.", null);
     }
 
     public ResponseObject<Void> deleteVehicle(VehicleDeletionRequestDto dto) {
@@ -77,7 +76,7 @@ public class VehicleService {
         Optional<User> userContainer = userRepository.findById(dto.userId());
 
         if (userContainer.isEmpty()) {
-            return new ResponseObject<>(false, "User does not exist.", null);
+            return ResponseObject.failure("User does not exist.");
         }
 
         User user = userContainer.get();
@@ -85,16 +84,16 @@ public class VehicleService {
         Optional<Vehicle> vehicleContainer = vehicleRepository.findById(dto.vehicleId());
 
         if (vehicleContainer.isEmpty()) {
-            return new ResponseObject<>(false, "Vehicle does not exist.", null);
+            return ResponseObject.failure("Vehicle does not exist.");
         }
 
         Vehicle vehicle = vehicleContainer.get();
 
         if (!vehicle.getUser().getUserId().equals(user.getUserId())) {
-            return new ResponseObject<>(false, "User does not own the vehicle.", null);
+            return ResponseObject.failure( "User does not own the vehicle.");
         }
 
         vehicleRepository.delete(vehicle);
-        return new ResponseObject<>(true, "Vehicle successfully deleted", null);
+        return ResponseObject.success("Vehicle successfully deleted", null);
     }
 }
