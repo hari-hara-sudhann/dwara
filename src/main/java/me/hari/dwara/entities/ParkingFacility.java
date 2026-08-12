@@ -21,6 +21,9 @@ public class ParkingFacility {
     private String name;
     private String address;
 
+    @Column(nullable = false, unique = true)
+    private String facilityCode;
+
     @Enumerated(EnumType.STRING)
     private ParkingFacilityStatus status;
 
