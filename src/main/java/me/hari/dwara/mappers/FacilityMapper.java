@@ -3,6 +3,7 @@ package me.hari.dwara.mappers;
 import me.hari.dwara.dtos.parkingfacility.FacilityCreationRequestDto;
 import me.hari.dwara.entities.ParkingFacility;
 import me.hari.dwara.entities.enums.ParkingFacilityStatus;
+import me.hari.dwara.dtos.parkingfacility.FacilityDto;
 
 public class FacilityMapper {
     public static ParkingFacility creationRequestToFacility(FacilityCreationRequestDto dto) {
@@ -13,5 +14,15 @@ public class FacilityMapper {
         facility.setStatus(ParkingFacilityStatus.INACTIVE);
 
         return facility;
+    }
+
+    public static FacilityDto toDto(ParkingFacility facility) {
+        return new FacilityDto(
+            facility.getFacilityId(),
+            facility.getFacilityCode(),
+            facility.getName(),
+            facility.getAddress(),
+            facility.getStatus()
+        );
     }
 }

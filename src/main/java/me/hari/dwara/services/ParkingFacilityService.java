@@ -4,10 +4,13 @@ import lombok.RequiredArgsConstructor;
 import me.hari.dwara.dtos.ResponseObject;
 import me.hari.dwara.dtos.parkingfacility.FacilityCreatedDto;
 import me.hari.dwara.dtos.parkingfacility.FacilityCreationRequestDto;
+import me.hari.dwara.dtos.parkingfacility.FacilityDto;
 import me.hari.dwara.entities.ParkingFacility;
 import me.hari.dwara.mappers.FacilityMapper;
 import me.hari.dwara.repositories.ParkingFacilityRepository;
 import org.springframework.stereotype.Service;
+
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -32,5 +35,15 @@ public class ParkingFacilityService {
                         facility.getStatus()
                 )
         );
+    }
+
+    public ResponseObject<FacilityDto> findFacility(String facilityCode) {
+        Optional<ParkingFacility> facility = facilityRepository.findByFacilityCode(facilityCode);
+
+        return facility.map(parkingFacility -> ResponseObject.success(
+                "Facility found.",
+                FacilityMapper.toDto(parkingFacility)
+        )).orElseGet(() -> ResponseObject.failure("Facility does not exist."));
+
     }
 }
