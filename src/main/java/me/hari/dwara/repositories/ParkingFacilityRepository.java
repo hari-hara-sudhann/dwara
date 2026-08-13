@@ -12,4 +12,6 @@ public interface ParkingFacilityRepository extends JpaRepository<ParkingFacility
     boolean existsByFacilityCode(String code);
 
     Optional<ParkingFacility> findByFacilityCode(String facilityCode);
+
+    void deleteByFacilityCode(String facilityCode);
 }
