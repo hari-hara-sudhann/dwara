@@ -1,5 +1,5 @@
 package me.hari.dwara.entities.enums;
 
-public enum Role {
+public enum UserRole {
     USER, ENTITY
 }
