@@ -1,5 +1,6 @@
 package me.hari.dwara.services;
 
+import me.hari.dwara.dtos.parkingsession.SessionDto;
 import me.hari.dwara.entities.ParkingFacility;
 import me.hari.dwara.entities.ParkingSession;
 import me.hari.dwara.entities.User;
@@ -59,5 +60,15 @@ public class ParkingSessionService {
         session.setEntryTimestamp(Instant.now());
         session.setSessionStatus(SessionStatus.PARKED);
         return ResponseObject.success("Parked successfully.", null);
+    }
+
+    public ResponseObject<SessionDto> getActiveSession(UUID userId) {
+        ParkingSession session = sessionRepository.findActiveSessionByUserId(userId).orElse(null);
+        if (session == null)
+            return ResponseObject.failure("No active session found");
+
+        SessionDto dto = SessionMapper.toDto(session);
+
+        return ResponseObject.success("Active session found.", dto);
     }
 }
