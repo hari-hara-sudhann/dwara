@@ -17,6 +17,8 @@ import me.hari.dwara.dtos.ResponseObject;
 import me.hari.dwara.dtos.parkingsession.SessionCreationRequestDto;
 import me.hari.dwara.repositories.ParkingSessionRepository;
 
+import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -55,7 +57,7 @@ public class ParkingSessionService {
     public ResponseObject<Void> checkIn(UUID sessionId) {
         ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session == null)
-            ResponseObject.failure("Parking session does not exist.");
+            return ResponseObject.failure("Parking session does not exist.");
 
         session.setEntryTimestamp(Instant.now());
         session.setSessionStatus(SessionStatus.PARKED);
@@ -70,5 +72,23 @@ public class ParkingSessionService {
         SessionDto dto = SessionMapper.toDto(session);
 
         return ResponseObject.success("Active session found.", dto);
+    }
+
+    public ResponseObject<BigDecimal> getParkingFee(UUID sessionId) {
+        ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
+        if (session == null)
+            return ResponseObject.failure("Session does not exist.");
+
+        Duration duration = Duration.between(Instant.now(), session.getEntryTimestamp());
+
+        BigDecimal seconds = BigDecimal.valueOf(duration.getSeconds());
+
+        BigDecimal rate = session.getFacility()
+                .getPricingPolicy()
+                .getRate(session.getVehicle()
+                        .getVehicleType());
+
+        BigDecimal fee = rate.multiply(seconds);
+        return ResponseObject.success("Current free", fee);
     }
 }
