@@ -61,6 +61,7 @@ public class ParkingSessionService {
 
         session.setEntryTimestamp(Instant.now());
         session.setSessionStatus(SessionStatus.PARKED);
+        sessionRepository.save(session);
         return ResponseObject.success("Parked successfully.", null);
     }
 
@@ -79,7 +80,7 @@ public class ParkingSessionService {
         if (session == null)
             return ResponseObject.failure("Session does not exist.");
 
-        Duration duration = Duration.between(Instant.now(), session.getEntryTimestamp());
+        Duration duration = Duration.between(session.getEntryTimestamp(), Instant.now());
 
         BigDecimal seconds = BigDecimal.valueOf(duration.getSeconds());
 
@@ -89,6 +90,6 @@ public class ParkingSessionService {
                         .getVehicleType());
 
         BigDecimal fee = rate.multiply(seconds);
-        return ResponseObject.success("Current free", fee);
+        return ResponseObject.success("Current fee", fee);
     }
 }
