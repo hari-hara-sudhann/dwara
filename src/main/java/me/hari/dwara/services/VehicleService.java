@@ -71,6 +71,10 @@ public class VehicleService {
 
         Vehicle vehicle = vehicleContainer.get();
 
+        if (!vehicle.getUser().getUserId().equals(user.getUserId())) {
+            return ResponseObject.failure("User does not own the vehicle");
+        }
+
         VehicleMapper.updationRequestToVehicle(vehicle,  dto);
         vehicleRepository.save(vehicle);
 
