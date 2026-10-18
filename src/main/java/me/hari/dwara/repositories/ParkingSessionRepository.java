@@ -1,10 +1,14 @@
 package me.hari.dwara.repositories;
 
 import me.hari.dwara.entities.ParkingSession;
+import me.hari.dwara.entities.enums.SessionStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -15,4 +19,13 @@ public interface ParkingSessionRepository extends JpaRepository<ParkingSession, 
         WHERE p.user.userId = :userId
     """)
     Optional<ParkingSession> findActiveSessionByUserId(UUID userId);
+
+    // Spec D9: one active session per user AND per vehicle. The caller passes
+    // the set of statuses that count as "active".
+    boolean existsByUser_UserIdAndSessionStatusIn(UUID userId, Collection<SessionStatus> statuses);
+
+    boolean existsByVehicle_VehicleIdAndSessionStatusIn(UUID vehicleId, Collection<SessionStatus> statuses);
+
+    // Spec D20: CREATED sessions the user never validated at a gate.
+    List<ParkingSession> findBySessionStatusAndCreatedAtBefore(SessionStatus sessionStatus, Instant cutoff);
 }
