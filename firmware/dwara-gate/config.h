@@ -43,6 +43,36 @@ static const char *WIFI_PASSWORD = "replace-me-password";
 // https:// with a verified CA before any real deployment.
 static const char *BACKEND_BASE_URL = "http://192.168.1.100:8080";
 
+// How long WiFi association may take before a request is failed closed.
+static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 10000;
+
+// ---------------------------------------------------------------------------
+// Networking transport selection (demo: serial bridge)
+// ---------------------------------------------------------------------------
+
+// GPIO26 (D26) is wired as INPUT_PULLUP at boot:
+//   HIGH (pin left floating / not connected) -> WiFi transport (production)
+//   LOW  (pin jumpered to GND)               -> serial bridge transport (demo)
+//
+// GPIO 34-39 are input-only and cannot enable the internal pull-up, so do not
+// move this there. GPIO26 is not a strapping pin and is free on the servo
+// wiring (servo signal uses GPIO27).
+static const uint8_t NETWORK_MODE_PIN = 26;
+
+// Set to 1 for the production authority (POST /gate/validate). Set to 0 only
+// for bench tests without a backend — PermissiveAuthService then opens the
+// gate for every request, regardless of the transport selected above.
+#define DWARA_REMOTE_AUTH 1
+
+// Serial bridge framing. Both prefixes are newline-terminated and deliberately
+// distinct from log output so a human can read the monitor while it runs.
+static const char *SERIAL_BRIDGE_REQ_PREFIX = "DWRAREQ ";
+static const char *SERIAL_BRIDGE_RES_PREFIX = "DWARERES ";
+
+// How long the firmware waits for the host bridge to answer a frame. The
+// bridge performs a real HTTP call, so keep this above BACKEND_TIMEOUT_MS.
+static const uint32_t SERIAL_BRIDGE_TIMEOUT_MS = 6000;
+
 // ---------------------------------------------------------------------------
 // BLE (peripheral, spec D1/D6; full GATT table in docs/ble-protocol.md)
 // ---------------------------------------------------------------------------
@@ -107,6 +137,10 @@ static const uint32_t ACTUATOR_SETTLE_TIMEOUT_MS = 3000;
 
 // Timeout for POST /gate/validate and GET /devices/{id}/commands.
 static const uint32_t BACKEND_TIMEOUT_MS = 4000;
+
+// Buffer sizes for serialized backend requests and bearer headers.
+static const size_t BACKEND_BODY_MAX = 256;
+static const size_t BACKEND_AUTH_MAX = 128;
 
 // Period between remote-command polls (spec D11 — the only backend-initiated
 // channel in scope).

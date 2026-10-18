@@ -1,52 +1,42 @@
 /**
  * ============================================================================
- *  DWARA — BackendClient (parked: NOT compiled into the test build)
+ *  DWARA — BackendClient (backend contract, transport-agnostic)
  * ============================================================================
- *  Kept verbatim from the backend-integrated build so the production
- *  RemoteAuthService can be built on top of it later. The current test build
- *  uses PermissiveAuthService and never touches WiFi/HTTP.
+ *  Builds the two backend requests used by this firmware and maps the
+ *  responses into firmware types:
  *
- *  Re-integration checklist (when the backend ships):
- *    1. Implement RemoteAuthService : AuthService in a new header, wrapping
- *       BackendClient::validate() and translating its ValidateResponse into
- *       AuthDecision.
- *    2. In dwara-gate.ino swap `PermissiveAuthService auth` for the remote
- *       service and pass it to GateController.
- *    3. Restore the /devices/{id}/commands poller (spec D11) — either inside
- *       the remote auth service's tick() or re-added to GateController.
- *    4. Restore the WiFi include + ensureWifi() call in setup().
+ *    POST /gate/validate              -> open / keep_closed + reason
+ *    GET  /devices/{id}/commands      -> remote command for the poller
+ *
+ *  It does NOT know whether the bytes travel over WiFi or the serial bridge;
+ *  the chosen BackendTransport is injected at boot (dwara-gate.ino).
  * ============================================================================
  */
 
 #pragma once
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 
+#include "BackendTransport.h"
 #include "config.h"
 #include "GateTypes.h"
 
 struct ValidateResponse {
-  GateResult decision;   // OPENED ("open") or DENIED ("keep_closed")
+  GateResult decision;  // OPENED ("open") or DENIED ("keep_closed")
   DenyReason reason;
   bool parsed;
 };
 
 class BackendClient {
  public:
-  bool ensureWifi(uint32_t timeoutMs = 10000) {
-    if (WiFi.status() == WL_CONNECTED) {
-      return true;
-    }
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    const uint32_t deadline = millis() + timeoutMs;
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-      delay(100);
-    }
-    return WiFi.status() == WL_CONNECTED;
+  // Attach the transport selected from NETWORK_MODE_PIN and bring it up.
+  bool begin(BackendTransport &transport) {
+    _transport = &transport;
+    const bool ready = _transport->begin();
+    Serial.printf("[backend] transport=%s ready=%s\n", _transport->name(),
+                  ready ? "yes" : "no");
+    return ready;
   }
 
   // POST /gate/validate  { deviceId, sessionId, intent }
@@ -54,51 +44,38 @@ class BackendClient {
   ValidateResponse validate(const char *sessionId, GateIntent intent) {
     ValidateResponse out{GateResult::DENIED, DenyReason::BACKEND_UNREACHABLE,
                          false};
-
-    if (!ensureWifi(BACKEND_TIMEOUT_MS)) {
-      Serial.println("[backend] WiFi unavailable");
+    if (_transport == nullptr) {
       return out;
     }
-
-    HTTPClient http;
-    char url[160];
-    snprintf(url, sizeof(url), "%s/gate/validate", BACKEND_BASE_URL);
-    http.begin(url);
-    http.setTimeout(BACKEND_TIMEOUT_MS);
-    http.setConnectTimeout(BACKEND_TIMEOUT_MS);
-    http.addHeader("Content-Type", "application/json");
-    char auth[96];
-    snprintf(auth, sizeof(auth), "Bearer %s", DEVICE_SECRET);
-    http.addHeader("Authorization", auth);
 
     JsonDocument req;
     req["deviceId"] = DEVICE_ID;
     req["sessionId"] = sessionId;
     req["intent"] = gateIntentString(intent);
 
-    char body[COMMAND_PAYLOAD_MAX];
+    char body[BACKEND_BODY_MAX];
     serializeJson(req, body, sizeof(body));
 
-    const int code = http.POST(body);
-    if (code <= 0) {
-      Serial.printf("[backend] /gate/validate connection error: %d\n", code);
-      http.end();
+    char auth[BACKEND_AUTH_MAX];
+    snprintf(auth, sizeof(auth), "Bearer %s", DEVICE_SECRET);
+
+    const BackendResponse http =
+        _transport->send(BackendRequest{"POST", "/gate/validate", auth, body});
+    if (http.status <= 0) {
+      Serial.printf("[backend] /gate/validate unreachable (%s)\n",
+                    _transport->name());
       return out;
     }
-
-    if (code != 200) {
-      Serial.printf("[backend] /gate/validate HTTP %d\n", code);
+    if (http.status != 200) {
+      Serial.printf("[backend] /gate/validate HTTP %d\n", http.status);
       out.reason = DenyReason::BACKEND_ERROR;
       out.parsed = true;
-      http.end();
       return out;
     }
 
-    const String payload = http.getString();
-    http.end();
-
     JsonDocument res;
-    if (deserializeJson(res, payload) != DeserializationError::Ok) {
+    if (deserializeJson(res, http.body) != DeserializationError::Ok) {
+      Serial.println("[backend] /gate/validate: malformed JSON");
       out.reason = DenyReason::BACKEND_ERROR;
       out.parsed = false;
       return out;
@@ -120,34 +97,39 @@ class BackendClient {
   // channel in scope). Expected 200:
   // { "command": "NONE" | "OPEN" | "KEEP_CLOSED" }
   RemoteCommand pollCommands() {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (_transport == nullptr) {
       return RemoteCommand::NONE;
     }
 
-    HTTPClient http;
-    char url[160];
-    snprintf(url, sizeof(url), "%s/devices/%s/commands", BACKEND_BASE_URL,
-             DEVICE_ID);
-    http.begin(url);
-    http.setTimeout(BACKEND_TIMEOUT_MS);
-    http.setConnectTimeout(BACKEND_TIMEOUT_MS);
-    char auth[96];
-    snprintf(auth, sizeof(auth), "Bearer %s", DEVICE_SECRET);
-    http.addHeader("Authorization", auth);
+    char path[96];
+    snprintf(path, sizeof(path), "/devices/%s/commands", DEVICE_ID);
 
-    const int code = http.GET();
-    RemoteCommand cmd = RemoteCommand::NONE;
-    if (code == 200) {
-      const String payload = http.getString();
-      JsonDocument res;
-      if (deserializeJson(res, payload) == DeserializationError::Ok) {
-        const char *c = res["command"] | "NONE";
-        if (strcmp(c, "OPEN") == 0) cmd = RemoteCommand::OPEN;
-        else if (strcmp(c, "KEEP_CLOSED") == 0) cmd = RemoteCommand::KEEP_CLOSED;
-      }
+    char auth[BACKEND_AUTH_MAX];
+    snprintf(auth, sizeof(auth), "Bearer %s", DEVICE_SECRET);
+
+    const BackendResponse http =
+        _transport->send(BackendRequest{"GET", path, auth, nullptr});
+    if (http.status != 200) {
+      return RemoteCommand::NONE;
     }
-    http.end();
-    return cmd;
+
+    JsonDocument res;
+    if (deserializeJson(res, http.body) != DeserializationError::Ok) {
+      return RemoteCommand::NONE;
+    }
+
+    const char *command = res["command"] | "NONE";
+    if (strcmp(command, "OPEN") == 0) {
+      return RemoteCommand::OPEN;
+    }
+    if (strcmp(command, "KEEP_CLOSED") == 0) {
+      return RemoteCommand::KEEP_CLOSED;
+    }
+    return RemoteCommand::NONE;
+  }
+
+  const char *transportName() const {
+    return _transport == nullptr ? "none" : _transport->name();
   }
 
  private:
@@ -159,4 +141,6 @@ class BackendClient {
     if (strcmp(r, "UNKNOWN_SESSION") == 0) return DenyReason::UNKNOWN_SESSION;
     return DenyReason::BACKEND_ERROR;
   }
+
+  BackendTransport *_transport = nullptr;
 };

@@ -1,143 +1,163 @@
 # ESP32 Gate Controller Firmware
 
-> Status: **Implemented (temporary LED actuator build)** · Board: ESP32 20-pin dev board · Framework: Arduino (spec D18) · Spec: [`dwara-architecture-spec.md`](../dwara-architecture-spec.md) §7
+> Status: **Implemented** · Board: ESP32 20-pin dev board · Framework: Arduino (spec D18) · Spec: [`dwara-architecture-spec.md`](../dwara-architecture-spec.md) §7
+
+The firmware drives the MG90S gate servo, exposes the BLE command/status service, and validates every open request against the backend. The backend link is an **abstract transport** so the same gate logic runs either over WiFi (production) or over the USB serial monitor through a small host-side bridge (demo only).
 
 ## Source layout
 
 ```
 firmware/dwara-gate/
-├── dwara-gate.ino       # main sketch: wiring of BLE + backend + gate state machine
-├── config.h             # flash-time config: identity, WiFi, BLE UUIDs, pins, timings (spec D7)
-├── GateTypes.h          # shared enums/structs: intent, result, deny reasons, commands
-├── GateActuator.h       # ABSTRACT gate mechanism interface (spec D15)
-├── LedGateActuator.h    # concrete impl (temporary): LED blink stand-in for the servo
-└── LedGateActuator.cpp
+├── dwara-gate.ino            # sketch: boot-time mode selection, BLE, gate state machine
+├── config.h                  # identity, pins, WiFi, timeouts, transport framing
+├── GateTypes.h               # intents, results, deny reasons, commands
+├── BackendTransport.h        # ABSTRACT request/response link
+├── WiFiBackendTransport.h    # concrete transport: WiFi station + HTTPClient (production)
+├── SerialBackendTransport.h  # concrete transport: framed JSON over USB serial (demo)
+├── BackendClient.h           # backend contract, independent of the transport
+├── RemoteAuthService.h       # AuthService backed by POST /gate/validate
+├── PermissiveAuthService.h   # offline bench alternative (approves everything)
+├── AuthService.h             # abstract authorization interface
+├── GateActuator.h            # ABSTRACT gate mechanism (spec D15)
+├── ServoGateActuator.h/.cpp  # MG90S on D27
+└── LedGateActuator.h/.cpp    # legacy LED stand-in, kept for bench use
 ```
 
+The serial demo also uses [`tools/serial-bridge/bridge.py`](../tools/serial-bridge/bridge.py); its protocol and usage are documented in [`docs/serial-bridge.md`](serial-bridge.md).
+
 Arduino IDE: open the `firmware/dwara-gate` folder as a sketch (the `.ino` gives it its name). PlatformIO: set `src_dir = firmware/dwara-gate` or copy the folder into `src/`.
+
+> **Partition scheme:** select **Huge APP (3 MB No OTA / 1 MB SPIFFS)** (Arduino IDE → Tools → Partition Scheme, or `PartitionScheme=huge_app` with `arduino-cli`). The WiFi + BLE build is ~1.8 MB, which overflows the board's default 1.2 MB application partition.
 
 **Required libraries** (Arduino Library Manager):
 
 | Library | Used for |
 |---|---|
 | ESP32 board package (`esp32` by Espressif) | core, BLE, WiFi |
-| `ArduinoJson` (v7) | BLE payload + backend response parsing |
-| `BLE2902` / BLE built-ins | come with the ESP32 board package |
+| `ArduinoJson` (v7) | BLE payload, backend response, serial-frame parsing |
+| `ESP32Servo` | MG90S servo control |
 
-## Abstract actuator (spec D15)
+## Networking modes (`NETWORK_MODE_PIN`)
 
-The gate mechanism is deliberately abstract — "the gate opens / the gate closes" — and everything else (BLE, backend client, state machine) only talks to the interface in `GateActuator.h`:
+GPIO26 (D26) is configured as `INPUT_PULLUP` at boot and sampled **once**. The internal pull-up keeps it HIGH when nothing is attached; jumper it to GND to select the serial bridge.
+
+| GPIO26 | Transport | Use |
+|---|---|---|
+| **HIGH** (pin open) | `WiFiBackendTransport` | **Production.** WiFi station + `HTTPClient` to `BACKEND_BASE_URL`. |
+| **LOW** (pin grounded) | `SerialBackendTransport` | **Demo only.** Requests are framed on the USB serial monitor and relayed by `tools/serial-bridge` to the same Spring Boot app. |
 
 ```cpp
-class GateActuator {
- public:
-  virtual void begin() = 0;          // init pins, force CLOSED (fail-closed boot)
-  virtual bool open()  = 0;          // non-blocking, false if busy
-  virtual bool close() = 0;          // non-blocking, false if busy
-  virtual void tick()  = 0;          // drive timing from loop()
-  virtual bool isBusy() const = 0;
-  virtual bool hasSettled() const = 0;
-  virtual bool hasFaulted() const = 0;   // stall watchdog (spec §10 #12)
-};
+// dwara-gate.ino (setup()):
+static BackendTransport *selectTransport() {
+  pinMode(NETWORK_MODE_PIN, INPUT_PULLUP);
+  delay(10);
+  if (digitalRead(NETWORK_MODE_PIN) == LOW) return &serialTransport;
+  return &wifiTransport;
+}
 ```
 
-Swapping mechanisms = writing one new class + changing one line in `dwara-gate.ino`. No BLE/backend code changes.
+Everything above the transport is shared: `RemoteAuthService` → `BackendClient` → `BackendTransport`. Swapping WiFi for serial changes no gate logic, payload, timeout handling, or fail-closed behavior.
 
-## TEST build (current): servo on D27 + permissive auth
+> The pin is read at boot only. Change the jumper and reset the board to switch modes. Do **not** move this input to GPIO34–39 — those pins are input-only and cannot enable the internal pull-up.
 
-> **Status change.** The current build drives the **MG90S servo on D27 (GPIO27)** directly and **does not contact the backend**: authorization is delegated to `PermissiveAuthService` (`AuthService.h` defines the abstract interface), which approves every request. This exists purely to bench-test the phone → BLE → servo loop while the backend is being built.
+## Wiring
 
-```cpp
-// dwara-gate.ino (current):
-static PermissiveAuthService auth;                                          // TEST: authorizes everything
-static ServoGateActuator actuator(ACTUATOR_PIN, OPEN_ANGLE, CLOSED_ANGLE);  // MG90S on D27
-// Production swap (backend ready):
-// static RemoteAuthService auth;   // wraps BackendClient (parked in BackendClient.h)
+| Signal | ESP32 pin | Notes |
+|---|---|---|
+| Servo signal | GPIO27 (D27) | MG90S signal; power from an **external 5 V supply** with a common ground and decoupling capacitor — do not power the servo from 3V3. |
+| Networking mode | GPIO26 (D26) | Leave open for WiFi. Jumper to GND for the serial bridge. |
+
+Servo angles are abstract in `config.h`: `OPEN_ANGLE = 90`, `CLOSED_ANGLE = 0`, with `SERVO_SETTLE_MS = 800` and a `ACTUATOR_SETTLE_TIMEOUT_MS = 3000` stall watchdog. The gate auto-closes `GATE_OPEN_HOLD_MS = 8000` after opening (spec D17).
+
+## Production path (WiFi)
+
+`WiFiBackendTransport` brings up station mode with `WIFI_SSID`/`WIFI_PASSWORD`, then sends:
+
+| Call | Auth | Body / Response |
+|---|---|---|
+| `POST /gate/validate` | `Authorization: Bearer <deviceSecret>` | `{deviceId, sessionId, intent}` → `200 {decision: "open"\|"keep_closed", reason: "..."}` |
+| `GET /devices/{deviceId}/commands` | same | `200 {command: "NONE"\|"OPEN"\|"KEEP_CLOSED"}` |
+
+Every request times out after `BACKEND_TIMEOUT_MS` (4 s). A WiFi or HTTP failure is reported to the app as `DENIED/BACKEND_UNREACHABLE`; a non-200 or malformed body is `DENIED/BACKEND_ERROR`. The gate never opens on a failed validation (fail closed, spec §7).
+
+`BackendClient::pollCommands()` is implemented against the same transport, but the sketch does not yet run the remote-command poller — that remains the parked D11 item.
+
+## Serial demo path (not production)
+
+With GPIO26 grounded, `SerialBackendTransport` writes one framed line per request and waits for the bridge's answer:
+
+```
+DWRAREQ {"id":7,"method":"POST","path":"/gate/validate","authorization":"Bearer ...","body":"{\"deviceId\":\"...\",\"sessionId\":\"...\",\"intent\":\"ENTRY\"}"}
+DWARERES {"id":7,"status":200,"body":"{\"decision\":\"open\",\"reason\":\"NONE\"}"}
 ```
 
-- **CLOSE intent:** the app can now also write `{"sessionId":"<uuid>","intent":"CLOSE"}` — the gate closes immediately and reports `result: "CLOSED"`. Used by the in-app Gate Test screen (Profile → Gate Test).
-- **No WiFi/HTTP** is compiled into the test boot path; `BackendClient.h` holds the parked HTTP client plus the re-integration checklist.
-- ⚠️ **Not for production:** anyone in BLE range can open the gate. Swap to `RemoteAuthService` (POST `/gate/validate` with the device bearer secret) before any deployment.
-- Dependencies: **ESP32Servo** library (Arduino Library Manager).
+- Frames are newline-terminated and prefixed, so normal `[gate]`/`[auth]` log lines remain readable in the monitor.
+- The firmware waits `SERIAL_BRIDGE_TIMEOUT_MS` (6 s) for the matching `id`, then fails closed.
+- The host bridge performs the real HTTP call to `--backend` (default `http://localhost:8080`), so the Spring Boot app must be running.
+- This path exists purely to demonstrate the backend flow without WiFi. It is **not** a production transport: it depends on a laptop, is unauthenticated at the USB layer, and is slower than WiFi.
 
-## Historical: temporary LED workaround (servo power issue)
+Run it with:
 
-> **Context.** The MG90S servo previously had a **power-supply problem** (voltage sag/brownout when the motor starts under load; the board resets), so the gate action was stood in for by an LED. The servo is now wired on D27 (see TEST build above); keep this section for the wiring notes.
+```bash
+cd tools/serial-bridge
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python bridge.py                       # auto-detects the ESP32 port
+# or: python bridge.py --port /dev/tty.usbserial-0001 --backend http://localhost:8080
+```
 
-**Semantics of the temporary build:**
+Full details, protocol fields, and troubleshooting: [`docs/serial-bridge.md`](serial-bridge.md).
 
-| Command | LED behavior on **D18** (GPIO18) |
-|---|---|
-| `openGate` | LED blinks **3 times** |
-| `closeGate` | LED blinks **2 times** |
+## Authorization modes
 
-Implementation: `LedGateActuator` (`LedGateActuator.h` / `LedGateActuator.cpp`), selected by a one-line change in `dwara-gate.ino`:
+`DWARA_REMOTE_AUTH` in `config.h` selects the authority:
+
+| Value | Service | Behavior |
+|---|---|---|
+| `1` (default) | `RemoteAuthService` | Backend decides every ENTRY/EXIT; serial or WiFi transport is used. |
+| `0` | `PermissiveAuthService` | Bench build: approves every request locally, no backend calls. |
+
+⚠️ `PermissiveAuthService` is not for production — anyone in BLE range can open the gate. The backend is the only trust anchor in the real system (spec D6).
+
+## Firmware behavior summary
+
+- **Boot:** sample GPIO26 → select transport → bring it up (when remote auth is enabled) → `actuator.begin()` forces the servo CLOSED → BLE advertising as `DWARA-<facilityCode>`.
+- **BLE write** `{"sessionId":"<uuid>","intent":"ENTRY"|"EXIT"|"CLOSE"}` is queued:
+  - `ENTRY`/`EXIT` → `AuthService.authorize()` → `actuator.open()` on approval; status `OPENED` after the servo settles, otherwise `DENIED` with the backend reason.
+  - `CLOSE` → closes immediately (no authorization round-trip); status `CLOSED`.
+  - Malformed payload → `DENIED/MALFORMED_COMMAND`.
+- **Auto-close:** fixed timer (`GATE_OPEN_HOLD_MS`, 8 s) after opening, then `CLOSED` once the servo settles.
+- **One movement at a time:** a command arriving while the actuator is busy is denied with `ACTUATOR_FAULT`; the app can retry.
+
+## Config reference (`config.h`)
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `NETWORK_MODE_PIN` | `26` | Mode jumper, `INPUT_PULLUP` |
+| `DWARA_REMOTE_AUTH` | `1` | Remote vs permissive authorization |
+| `BACKEND_BASE_URL` | `http://192.168.1.100:8080` | WiFi transport target (no trailing slash) |
+| `BACKEND_TIMEOUT_MS` | `4000` | HTTP request timeout |
+| `WIFI_CONNECT_TIMEOUT_MS` | `10000` | WiFi association wait |
+| `SERIAL_BRIDGE_TIMEOUT_MS` | `6000` | Serial demo frame wait |
+| `COMMAND_POLL_INTERVAL_MS` | `5000` | Reserved for the parked remote-command poller |
+| `ACTUATOR_PIN` | `27` | Servo signal |
+| `GATE_OPEN_HOLD_MS` | `8000` | Auto-close delay |
+
+## Legacy: LED actuator
+
+`LedGateActuator` remains available as a stand-in when the servo cannot be powered: `open()` blinks 3 times, `close()` blinks 2 times, both non-blocking and driven from `tick()`. Swap the one instantiation line in `dwara-gate.ino`:
 
 ```cpp
-static LedGateActuator actuator(ACTUATOR_PIN);   // TEMPORARY LED build
-// Production swap (servo power fixed):
+static LedGateActuator actuator(ACTUATOR_PIN);
 // static ServoGateActuator actuator(ACTUATOR_PIN, OPEN_ANGLE, CLOSED_ANGLE);
 ```
 
-Behavioral details:
-
-- Blink timing is fully **non-blocking** (`tick()`-driven): BLE and backend polling keep running during a sequence (`LED_BLINK_ON_MS` / `LED_BLINK_OFF_MS` / `LED_SETTLE_GAP_MS` in `config.h`).
-- A `close()` arriving **during** an open sequence (the fixed-timer auto-close, spec D17) is deferred and runs immediately after the open blinks finish.
-- `hasSettled()` becomes true when the pattern completes; the LED is dark in both end states. `hasFaulted()` never fires on this build (an LED cannot stall) but the contract is kept so the watchdog path stays identical for the servo build.
-- This build changes **nothing** in the flows of the spec (§3.3, §3.5): session validation, `open`/`keep_closed` decisions, auto-close timer, and remote commands behave exactly as specified.
-
-**Revert path (when servo power is fixed):**
-
-1. Implement `ServoGateActuator` against `GateActuator` (non-blocking sweep toward `OPEN_ANGLE`/`CLOSED_ANGLE`, settle watchdog using `ACTUATOR_SETTLE_TIMEOUT_MS`, PWM via ESP32Servo or LEDC).
-2. Swap the one instantiation line in `dwara-gate.ino`.
-3. Wire the MG90S per `docs/hardware.md` (external 5 V supply, common ground, decoupling capacitor — **do not** power the servo from the 3V3 rail).
-4. Delete this section and mark `docs/hardware.md` as active; keep the decision-log entry (R7 below) as history.
-
-## Firmware behavior summary (TEST build)
-
-- **Boot:** actuator `begin()` first (servo forced to CLOSED, fail-closed), then BLE advertising as `DWARA-<facilityCode>` (spec D1). No WiFi/backend in the test build.
-- **BLE write** `{"sessionId":"<uuid>","intent":"ENTRY"|"EXIT"|"CLOSE"}` → queued → `AuthService.authorize()` (permissive: always open) → verdict:
-  - `ENTRY`/`EXIT` → `actuator.open()` (servo to 90°), notify `OPENED` after the settle window.
-  - `CLOSE` → `actuator.close()` immediately (servo to 0°), notify `CLOSED`.
-  - Malformed payload → `DENIED/MALFORMED_COMMAND`.
-- **Auto-close:** `GATE_OPEN_HOLD_MS` (8 s default) after a successful open, `actuator.close()` runs and reports `CLOSED`.
-- **Remote commands:** parked with `BackendClient.h` until the backend ships.
-
-## Backend contract expected by this firmware
-
-The sketch will run end-to-end once the backend implements (design in spec §5, `docs/api-reference.md`):
-
-| Call | Auth | Body / Response |
-|---|---|---|
-| `POST /gate/validate` | `Authorization: Bearer <deviceSecret>` | `{deviceId, sessionId, intent}` → `200 {decision: "open"\|"keep_closed", reason: "..."}` |
-| `GET /devices/{deviceId}/commands` | same | `200 {command: "NONE"\|"OPEN"\|"KEEP_CLOSED"}` |
-
-Until then, the TEST build runs fully offline via `PermissiveAuthService` — no backend calls are made.
-  - `open` → `actuator.open()` (3 blinks), notify `OPENED` on the status characteristic after settle.
-  - `keep_closed` → notify `DENIED` + reason (`STALE_SESSION`, `PAYMENT_REQUIRED`, `WRONG_FACILITY`, `WRONG_STATE_FOR_ENTRY`, `UNKNOWN_SESSION`, …).
-  - Backend unreachable → notify `DENIED/BACKEND_UNREACHABLE` (fail closed at the gate; post-payment recovery is the remote-command path, spec D11/D16).
-- **Auto-close:** `GATE_OPEN_HOLD_MS` (8 s default) after a successful open, `actuator.close()` runs (2 blinks).
-- **Remote commands:** poll `GET /devices/{id}/commands` every `COMMAND_POLL_INTERVAL_MS`; `OPEN` opens without session context, `KEEP_CLOSED` force-closes. Never interrupts an in-flight user command.
-- **Malformed BLE payload** → `DENIED/MALFORMED_COMMAND`; one gate movement at a time.
-
-## Backend contract expected by this firmware
-
-The sketch will run end-to-end once the backend implements (design in spec §5, `docs/api-reference.md`):
-
-| Call | Auth | Body / Response |
-|---|---|---|
-| `POST /gate/validate` | `Authorization: Bearer <deviceSecret>` | `{deviceId, sessionId, intent}` → `200 {decision: "open"\|"keep_closed", reason: "..."}` |
-| `GET /devices/{deviceId}/commands` | same | `200 {command: "NONE"\|"OPEN"\|"KEEP_CLOSED"}` |
-
-Until then, `POST /gate/validate` returns `keep_closed`/non-200 and the LED stays dark — expected.
-
-## Wiring (temporary LED build)
-
-- LED anode → GPIO18 (D18) through a ~220 Ω series resistor; cathode → GND.
-- No external supply needed. (Servo build: see `docs/hardware.md`.)
+The LED was the original workaround for MG90S supply sag; the servo build is current. Keep the external-supply wiring notes above.
 
 ## Known limitations
 
-- Flash-time secrets in `config.h` are placeholders — fill `WIFI_*`, `DEVICE_ID`, `DEVICE_SECRET`, `BACKEND_BASE_URL`, `FACILITY_CODE` per device before flashing (spec D7).
+- Secrets in `config.h` are placeholders — fill `WIFI_*`, `DEVICE_ID`, `DEVICE_SECRET`, `BACKEND_BASE_URL`, and `FACILITY_CODE` per device before flashing (spec D7).
 - Plaintext BLE by design in v1 (spec D6); HTTP (not HTTPS) for bring-up — switch `BACKEND_BASE_URL` to TLS before real deployment.
+- The serial bridge is a demonstration aid and will not ship in production.
+- The remote-command poller is not wired into the gate loop yet (D11 follow-up).
 - `dwara-gate.ino` compiles only for ESP32 targets (BLE + WiFi are board-specific).

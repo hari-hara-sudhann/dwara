@@ -1,19 +1,23 @@
 /**
  * ============================================================================
- *  DWARA — ESP32 Gate Controller (TEST build: servo on D27, permissive auth)
+ *  DWARA — ESP32 Gate Controller (servo on D27, pluggable backend transport)
  * ============================================================================
  *  Spec: dwara-architecture-spec.md §3.3/§3.5 (flows), §6 (BLE), §7 (firmware),
  *  D1/D5/D6/D7/D15/D17.
  *
- *  Hardware: ESP32 (20-pin dev board), MG90S servo signal on D27 (GPIO27).
+ *  Hardware: ESP32 (20-pin dev board), MG90S servo signal on D27 (GPIO27),
+ *  networking-mode jumper on D26 (GPIO26, INPUT_PULLUP).
  *
- *  TEST build configuration (backend not wired yet):
- *    - AuthService       : PermissiveAuthService — authorizes EVERY request,
- *                          no WiFi/backend involved. Swap to
- *                          RemoteAuthService when the backend ships
- *                          (BackendClient.h holds the parked HTTP client and
- *                          the re-integration checklist).
- *    - GateActuator      : ServoGateActuator — MG90S, OPEN/CLOSED angles.
+ *  Networking is abstract (BackendTransport.h). At boot the firmware samples
+ *  NETWORK_MODE_PIN:
+ *    - HIGH (not grounded) -> WiFiBackendTransport : WiFi station + HTTPClient.
+ *      This is the production path.
+ *    - LOW  (jumper to GND) -> SerialBackendTransport : one-line JSON frames on
+ *      the USB serial monitor, relayed by tools/serial-bridge/bridge.py to the
+ *      locally running Spring Boot app. Demo only, never production.
+ *
+ *  AuthService is RemoteAuthService (backend is the trust anchor). Set
+ *  DWARA_REMOTE_AUTH to 0 in config.h for the offline permissive bench build.
  *
  *  BLE behaviour (unchanged from spec §6):
  *    - Advertises as "DWARA-<facilityCode>".
@@ -38,7 +42,15 @@
 #include "GateActuator.h"
 #include "ServoGateActuator.h"
 #include "AuthService.h"
+#include "BackendTransport.h"
+#include "WiFiBackendTransport.h"
+#include "SerialBackendTransport.h"
+#include "BackendClient.h"
+#if DWARA_REMOTE_AUTH
+#include "RemoteAuthService.h"
+#else
 #include "PermissiveAuthService.h"
+#endif
 
 // ---------------------------------------------------------------------------
 // DwaraBle — GATT peripheral (spec §6; full table: docs/ble-protocol.md)
@@ -81,8 +93,8 @@ class GateCommandCallbacks final : public BLECharacteristicCallbacks {
   explicit GateCommandCallbacks(DwaraBle *ble) : _ble(ble) {}
 
   // The app writes: {"sessionId":"<uuid>","intent":"ENTRY"|"EXIT"|"CLOSE"}
-  // Plaintext by design in v1 (spec D6): authorization is a pluggable
-  // service; the PermissiveAuthService accepts everything (TEST build).
+  // Plaintext by design in v1 (spec D6): the command is only a request here;
+  // RemoteAuthService re-validates it against the backend before opening.
   void onWrite(BLECharacteristic *characteristic) override {
     const String value = characteristic->getValue();
     if (value.length() == 0 || value.length() > COMMAND_PAYLOAD_MAX) {
@@ -320,10 +332,41 @@ class GateController {
 };
 
 // ---------------------------------------------------------------------------
+// Networking transport selection
+// ---------------------------------------------------------------------------
+
+static WiFiBackendTransport wifiTransport;
+static SerialBackendTransport serialTransport(Serial);
+
+// Sample the mode jumper once, at boot. HIGH (internal pull-up) means the pin
+// is left open -> WiFi. LOW means it is jumpered to GND -> serial bridge.
+static BackendTransport *selectTransport() {
+  pinMode(NETWORK_MODE_PIN, INPUT_PULLUP);
+  delay(10);  // let the pull-up settle before the first sample
+
+  if (digitalRead(NETWORK_MODE_PIN) == LOW) {
+    Serial.printf("[net] GPIO%u LOW -> serial bridge transport (demo)\n",
+                  (unsigned)NETWORK_MODE_PIN);
+    return &serialTransport;
+  }
+
+  Serial.printf("[net] GPIO%u HIGH -> WiFi transport (production)\n",
+                (unsigned)NETWORK_MODE_PIN);
+  return &wifiTransport;
+}
+
+// ---------------------------------------------------------------------------
 // Global objects + Arduino entry points
 // ---------------------------------------------------------------------------
 
-static PermissiveAuthService auth;  // TEST build; swap for RemoteAuthService when backend ships
+static BackendClient backend;
+#if DWARA_REMOTE_AUTH
+static RemoteAuthService auth(backend);
+static const char *AUTH_MODE_NAME = "remote";
+#else
+static PermissiveAuthService auth;
+static const char *AUTH_MODE_NAME = "permissive";
+#endif
 static DwaraBle ble;
 static ServoGateActuator actuator(ACTUATOR_PIN, OPEN_ANGLE, CLOSED_ANGLE);  // MG90S on D27
 static GateController controller(auth, ble, actuator);
@@ -331,8 +374,20 @@ static GateController controller(auth, ble, actuator);
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println(String("\n[dwara] boot — facility ") + FACILITY_CODE +
-                 " (TEST build: servo + permissive auth)");
+  Serial.printf("\n[dwara] boot — facility %s (servo + %s auth)\n",
+                FACILITY_CODE, AUTH_MODE_NAME);
+
+  // Pick the request transport before anything can authorize a command. The
+  // gate flow above this layer is identical in both modes.
+  BackendTransport *transport = selectTransport();
+#if DWARA_REMOTE_AUTH
+  if (!backend.begin(*transport)) {
+    Serial.println("[net] transport unavailable — requests will fail closed");
+  }
+#else
+  (void)transport;
+  Serial.println("[net] permissive auth build — backend calls disabled");
+#endif
 
   // Fail-closed boot: actuator first (servo forced to CLOSED), then BLE.
   controller.begin();
