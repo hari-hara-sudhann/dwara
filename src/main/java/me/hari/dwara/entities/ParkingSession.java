@@ -36,4 +36,15 @@ public class ParkingSession {
     private SessionStatus sessionStatus;
 
     private BigDecimal totalFee;
+
+    // When the session row was created — i.e. when the user tapped "start",
+    // not when the gate opened. This is what the stale-session job measures
+    // against (spec D20); entryTimestamp cannot, because it is only stamped
+    // once the gate authorizes.
+    private Instant createdAt;
+
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = Instant.now();
+    }
 }

@@ -15,7 +15,7 @@ spring:
     open-in-view: ${SPRING_JPA_OPEN_IN_VIEW:false}
     properties:
       hibernate:
-        format_sql: true
+        show-sql: true
 
 server:
   port: ${APP_PORT:8080}
@@ -23,3 +23,14 @@ server:
 jwt:
   secret: ${JWT_SECRET}
   expiration: ${JWT_EXPIRATION}
+
+dwara:
+  sessions:
+    # Spec D20: a CREATED session the user never validated at a gate is aborted
+    # after this long.
+    stale-after: ${STALE_SESSION_AFTER:PT15M}
+    # Spec §10 #5: how long after exit an already-EXITED session may re-open.
+    # Mirrors the firmware's GATE_OPEN_HOLD_MS servo close timer.
+    exit-grace-window: ${EXIT_GRACE_WINDOW:PT8S}
+    # How often the stale-session sweep runs.
+    stale-sweep-interval: ${STALE_SWEEP_INTERVAL:PT1M}

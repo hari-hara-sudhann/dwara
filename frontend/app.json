@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Dwara",
+    "slug": "hari-hara-sudhan",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F8F9FA",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "me.hari.dwara"
+    },
+    "android": {
+      "package": "me.hari.dwara",
+      "permissions": [
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT",
+        "ACCESS_FINE_LOCATION"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#00B177"
+      }
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "@sfourdrinier/react-native-ble-plx",
+        {
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "Allow Dwara to find and open parking gates nearby"
+        }
+      ],
+      "react-native-ble-plx"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "bf1012cf-bd9e-4bd6-bf52-094eda1a43d1"
+      }
+    },
+    "owner": "hariharasudhanns-team"
+  }
+}

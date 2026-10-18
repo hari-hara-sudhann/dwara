@@ -26,4 +26,9 @@ public class GateController {
     private String firmwareVersion;
 
     private Instant lastHeartbeat;
+
+    // Write-only from the API's point of view (spec §4): the ESP32 authenticates
+    // with the plaintext secret, which is flashed at build time (D7) and never
+    // readable back. Only the hash is stored (spec D6/D11).
+    private String deviceSecretHash;
 }
