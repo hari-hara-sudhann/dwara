@@ -26,7 +26,6 @@ public class SessionMapper {
     public static SessionDto toDto(ParkingSession session) {
 
         Instant start = session.getEntryTimestamp();
-        Instant end = Instant.now();
         Duration duration = Duration.between(session.getEntryTimestamp(), Instant.now());
         PricingPolicy policy = session.getFacility().getPricingPolicy();
 
