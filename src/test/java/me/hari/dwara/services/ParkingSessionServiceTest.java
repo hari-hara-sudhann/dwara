@@ -246,15 +246,29 @@ class ParkingSessionServiceTest {
     }
 
     @Test
-    void cancel_abortsACreatedSession() {
+    void cancel_abortsACreatedSessionForItsOwner() {
         ParkingSession session = session(SessionStatus.CREATED);
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
 
-        ResponseObject<Void> result = service.cancel(SESSION_ID);
+        ResponseObject<Void> result = service.cancel(SESSION_ID, USER_ID);
 
         assertTrue(result.getSuccess());
         assertEquals(SessionStatus.ABORTED, session.getSessionStatus());
         verify(sessionRepository).save(session);
+    }
+
+    @Test
+    void cancel_refusesAnotherUsersSession() {
+        ParkingSession session = session(SessionStatus.CREATED);
+        session.getUser().setUserId(OTHER_USER_ID);
+        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+
+        ResponseObject<Void> result = service.cancel(SESSION_ID, USER_ID);
+
+        assertFalse(result.getSuccess());
+        assertEquals("Parking session does not belong to the user.", result.getMessage());
+        assertEquals(SessionStatus.CREATED, session.getSessionStatus());
+        verify(sessionRepository, never()).save(any());
     }
 
     // ----------------------------------------------------------------- pay --
@@ -294,13 +308,27 @@ class ParkingSessionServiceTest {
     }
 
     @Test
+    void pay_refusesAnotherUsersSession() {
+        ParkingSession session = parkedSession();
+        session.getUser().setUserId(OTHER_USER_ID);
+        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+
+        ResponseObject<PaymentReceiptDto> result = service.pay(SESSION_ID, USER_ID);
+
+        assertFalse(result.getSuccess());
+        assertEquals("Parking session does not belong to the user.", result.getMessage());
+        verify(paymentService, never()).charge(any(), any());
+        verify(sessionRepository, never()).save(any());
+    }
+
+    @Test
     void pay_freezesTheRoundedFeeAndMovesTheSessionToPaymentPending() {
         ParkingSession session = parkedSession();
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
         when(paymentService.charge(eq(SESSION_ID), any()))
                 .thenReturn(new PaymentOutcome(true, "MOCK-ref-1"));
 
-        ResponseObject<PaymentReceiptDto> result = service.pay(SESSION_ID);
+        ResponseObject<PaymentReceiptDto> result = service.pay(SESSION_ID, USER_ID);
 
         assertTrue(result.getSuccess());
 
@@ -352,14 +380,17 @@ class ParkingSessionServiceTest {
 
     @Test
     void getActiveSession_reportsThatThereIsNone() {
-        when(sessionRepository.findActiveSessionByUserId(USER_ID)).thenReturn(Optional.empty());
+        when(sessionRepository
+                .findFirstByUser_UserIdAndSessionStatusInOrderByCreatedAtDesc(eq(USER_ID), any()))
+                .thenReturn(Optional.empty());
 
         assertFalse(service.getActiveSession(USER_ID).getSuccess());
     }
 
     @Test
     void getActiveSession_returnsTheLiveEstimate() {
-        when(sessionRepository.findActiveSessionByUserId(USER_ID))
+        when(sessionRepository
+                .findFirstByUser_UserIdAndSessionStatusInOrderByCreatedAtDesc(eq(USER_ID), any()))
                 .thenReturn(Optional.of(parkedSession()));
 
         ResponseObject<SessionDto> result = service.getActiveSession(USER_ID);
@@ -367,6 +398,19 @@ class ParkingSessionServiceTest {
         assertTrue(result.getSuccess());
         assertEquals(SESSION_ID, result.getResponse().sessionId());
         assertNotNull(result.getResponse().entryAt());
+    }
+
+    @Test
+    void getActiveSession_handlesACreatedSessionThatHasNotEnteredYet() {
+        when(sessionRepository
+                .findFirstByUser_UserIdAndSessionStatusInOrderByCreatedAtDesc(eq(USER_ID), any()))
+                .thenReturn(Optional.of(session(SessionStatus.CREATED)));
+
+        ResponseObject<SessionDto> result = service.getActiveSession(USER_ID);
+
+        assertTrue(result.getSuccess());
+        assertNull(result.getResponse().entryAt());
+        assertEquals(0, BigDecimal.ZERO.compareTo(result.getResponse().estimatedFee()));
     }
 
     // -------------------------------------------------------- getParkingFee --
@@ -382,10 +426,33 @@ class ParkingSessionServiceTest {
     void getParkingFee_accruesTheUnroundedPerSecondRate() {
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(parkedSession()));
 
-        ResponseObject<BigDecimal> result = service.getParkingFee(SESSION_ID);
+        ResponseObject<BigDecimal> result = service.getParkingFee(SESSION_ID, USER_ID);
 
         assertTrue(result.getSuccess());
         assertEquals(0, new BigDecimal("1.20").compareTo(result.getResponse()));
+    }
+
+    @Test
+    void getParkingFee_refusesAnotherUsersSession() {
+        ParkingSession session = parkedSession();
+        session.getUser().setUserId(OTHER_USER_ID);
+        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+
+        ResponseObject<BigDecimal> result = service.getParkingFee(SESSION_ID, USER_ID);
+
+        assertFalse(result.getSuccess());
+        assertEquals("Session does not belong to the user.", result.getMessage());
+    }
+
+    @Test
+    void getParkingFee_refusesACreatedSessionBeforeEntry() {
+        when(sessionRepository.findById(SESSION_ID))
+                .thenReturn(Optional.of(session(SessionStatus.CREATED)));
+
+        ResponseObject<BigDecimal> result = service.getParkingFee(SESSION_ID, USER_ID);
+
+        assertFalse(result.getSuccess());
+        assertEquals("Session has not been parked yet.", result.getMessage());
     }
 
     // -------------------------------------------------------------- helpers --

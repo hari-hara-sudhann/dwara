@@ -28,7 +28,9 @@ public class UserService {
         }
 
         User newUser = new User();
-        newUser.setName(dto.getEmail());
+        newUser.setName(dto.getName() != null && !dto.getName().isBlank()
+                ? dto.getName()
+                : dto.getEmail());
         newUser.setEmail(dto.getEmail());
 
         String passwordHash = passwordEncoder.encode(dto.getRawPassword());

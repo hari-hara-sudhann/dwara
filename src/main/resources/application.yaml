@@ -25,6 +25,9 @@ jwt:
   expiration: ${JWT_EXPIRATION}
 
 dwara:
+  # Spec D13: static admin key for facility/device administration. Set
+  # DWARA_ADMIN_KEY in the environment; blank closes the admin surface.
+  admin-key: ${DWARA_ADMIN_KEY:}
   sessions:
     # Spec D20: a CREATED session the user never validated at a gate is aborted
     # after this long.

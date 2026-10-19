@@ -8,7 +8,9 @@ import me.hari.dwara.dtos.vehicle.VehicleDetailsDto;
 import me.hari.dwara.dtos.vehicle.VehicleUpdationRequestDto;
 import me.hari.dwara.entities.User;
 import me.hari.dwara.entities.Vehicle;
+import me.hari.dwara.entities.enums.SessionStatus;
 import me.hari.dwara.entities.enums.VehicleType;
+import me.hari.dwara.repositories.ParkingSessionRepository;
 import me.hari.dwara.repositories.UserRepository;
 import me.hari.dwara.repositories.VehicleRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,12 +43,14 @@ class VehicleServiceTest {
     private VehicleRepository vehicleRepository;
     @Mock
     private UserRepository userRepository;
+    @Mock
+    private ParkingSessionRepository sessionRepository;
 
     private VehicleService service;
 
     @BeforeEach
     void setUp() {
-        service = new VehicleService(vehicleRepository, userRepository);
+        service = new VehicleService(vehicleRepository, userRepository, sessionRepository);
     }
 
     // ------------------------------------------------------- createVehicle --
@@ -192,6 +196,21 @@ class VehicleServiceTest {
 
         assertFalse(result.getSuccess());
         assertEquals("User does not own the vehicle.", result.getMessage());
+        verify(vehicleRepository, never()).delete(any());
+    }
+
+    @Test
+    void deleteVehicle_refusesAVehicleWithAnActiveSession() {
+        Vehicle vehicle = vehicle(USER_ID);
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
+        when(vehicleRepository.findById(VEHICLE_ID)).thenReturn(Optional.of(vehicle));
+        when(sessionRepository.existsByVehicle_VehicleIdAndSessionStatusIn(
+                VEHICLE_ID, SessionStatus.ACTIVE)).thenReturn(true);
+
+        ResponseObject<Void> result = service.deleteVehicle(deletionRequest(USER_ID, VEHICLE_ID));
+
+        assertFalse(result.getSuccess());
+        assertEquals("Vehicle has an active parking session.", result.getMessage());
         verify(vehicleRepository, never()).delete(any());
     }
 

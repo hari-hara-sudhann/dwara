@@ -77,6 +77,34 @@ class UserServiceTest {
         assertEquals(UserRole.USER, saved.getValue().getUserRole());
     }
 
+    @Test
+    void register_storesTheNameTheUserSupplied() {
+        when(userRepository.existsByEmail("a@b.c")).thenReturn(false);
+        when(passwordEncoder.encode("hunter2")).thenReturn("BCRYPT-HASH");
+        RegistrationDto dto = registration("a@b.c", "hunter2");
+        dto.setName("Verify User");
+
+        ResponseObject<RegisrationSuccessDto> result = service.register(dto);
+
+        assertEquals("Verify User", result.getResponse().getName());
+
+        ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(saved.capture());
+        assertEquals("Verify User", saved.getValue().getName());
+    }
+
+    @Test
+    void register_fallsBackToEmailWhenNoNameIsSupplied() {
+        when(userRepository.existsByEmail("a@b.c")).thenReturn(false);
+        when(passwordEncoder.encode("hunter2")).thenReturn("BCRYPT-HASH");
+        RegistrationDto dto = registration("a@b.c", "hunter2");
+        dto.setName("  ");
+
+        ResponseObject<RegisrationSuccessDto> result = service.register(dto);
+
+        assertEquals("a@b.c", result.getResponse().getName());
+    }
+
     // --------------------------------------------------------------- login --
 
     @Test

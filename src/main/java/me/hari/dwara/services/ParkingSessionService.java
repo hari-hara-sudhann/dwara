@@ -40,15 +40,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ParkingSessionService {
 
-    /**
-     * Spec D9 / §10 #2: statuses that hold the single-session slot. {@code EXITED}
-     * and {@code ABORTED} are terminal, so they free the user and the vehicle up.
-     */
-    private static final List<SessionStatus> ACTIVE_STATUSES = List.of(
-            SessionStatus.CREATED,
-            SessionStatus.PARKED,
-            SessionStatus.PAYMENT_PENDING
-    );
+    /** Spec D9 / §10 #2: statuses that hold the single-session slot. */
+    private static final List<SessionStatus> ACTIVE_STATUSES = SessionStatus.ACTIVE;
 
     private final ParkingSessionRepository sessionRepository;
     private final UserRepository userRepository;
@@ -112,9 +105,22 @@ public class ParkingSessionService {
      * once the gate has authorized an entry the fee clock is running.
      */
     public ResponseObject<Void> cancel(UUID sessionId) {
+        return cancel(sessionId, null);
+    }
+
+    /**
+     * Owner-scoped cancellation used by {@code POST /sessions/{id}/cancel}.
+     *
+     * @param userId the authenticated user; when non-null the session must
+     *               belong to them.
+     */
+    public ResponseObject<Void> cancel(UUID sessionId, UUID userId) {
         ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session == null)
             return ResponseObject.failure("Parking session does not exist.");
+
+        if (userId != null && !isOwnedBy(session, userId))
+            return ResponseObject.failure("Parking session does not belong to the user.");
 
         if (session.getSessionStatus() != SessionStatus.CREATED)
             return ResponseObject.failure("Only a created session can be cancelled.");
@@ -132,9 +138,22 @@ public class ParkingSessionService {
      * gate will open for.
      */
     public ResponseObject<PaymentReceiptDto> pay(UUID sessionId) {
+        return pay(sessionId, null);
+    }
+
+    /**
+     * Owner-scoped payment used by {@code POST /sessions/{id}/pay}.
+     *
+     * @param userId the authenticated user; when non-null the session must
+     *               belong to them.
+     */
+    public ResponseObject<PaymentReceiptDto> pay(UUID sessionId, UUID userId) {
         ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session == null)
             return ResponseObject.failure("Parking session does not exist.");
+
+        if (userId != null && !isOwnedBy(session, userId))
+            return ResponseObject.failure("Parking session does not belong to the user.");
 
         // CREATED means the car never went in (nothing to bill); PAYMENT_PENDING
         // and EXITED mean it is already settled.
@@ -192,7 +211,9 @@ public class ParkingSessionService {
     }
 
     public ResponseObject<SessionDto> getActiveSession(UUID userId) {
-        ParkingSession session = sessionRepository.findActiveSessionByUserId(userId).orElse(null);
+        ParkingSession session = sessionRepository
+                .findFirstByUser_UserIdAndSessionStatusInOrderByCreatedAtDesc(userId, ACTIVE_STATUSES)
+                .orElse(null);
         if (session == null)
             return ResponseObject.failure("No active session found");
 
@@ -202,9 +223,27 @@ public class ParkingSessionService {
     }
 
     public ResponseObject<BigDecimal> getParkingFee(UUID sessionId) {
+        return getParkingFee(sessionId, null);
+    }
+
+    /**
+     * Owner-scoped live fee used by {@code GET /sessions/{id}/fee}.
+     *
+     * @param userId the authenticated user; when non-null the session must
+     *               belong to them.
+     */
+    public ResponseObject<BigDecimal> getParkingFee(UUID sessionId, UUID userId) {
         ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session == null)
             return ResponseObject.failure("Session does not exist.");
+
+        if (userId != null && !isOwnedBy(session, userId))
+            return ResponseObject.failure("Session does not belong to the user.");
+
+        // The billing clock starts at gate authorization (D3/D19): a CREATED
+        // session has nothing to accrue yet.
+        if (session.getEntryTimestamp() == null)
+            return ResponseObject.failure("Session has not been parked yet.");
 
         Duration duration = Duration.between(session.getEntryTimestamp(), Instant.now());
 
@@ -217,6 +256,12 @@ public class ParkingSessionService {
 
         BigDecimal fee = rate.multiply(seconds);
         return ResponseObject.success("Current fee", fee);
+    }
+
+    /** A session is only addressable by the user who started it. */
+    private static boolean isOwnedBy(ParkingSession session, UUID userId) {
+        return session.getUser() != null
+                && userId.equals(session.getUser().getUserId());
     }
 
     /**

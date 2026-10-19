@@ -3,7 +3,6 @@ package me.hari.dwara.repositories;
 import me.hari.dwara.entities.ParkingSession;
 import me.hari.dwara.entities.enums.SessionStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
@@ -14,11 +13,10 @@ import java.util.UUID;
 
 @Repository
 public interface ParkingSessionRepository extends JpaRepository<ParkingSession, UUID> {
-    @Query("""
-        SELECT p FROM ParkingSession p
-        WHERE p.user.userId = :userId
-    """)
-    Optional<ParkingSession> findActiveSessionByUserId(UUID userId);
+    // One of the ACTIVE_STATUSES only — a user's EXITED/ABORTED history must
+    // never be reported as their current session (spec §3.2/§5).
+    Optional<ParkingSession> findFirstByUser_UserIdAndSessionStatusInOrderByCreatedAtDesc(
+            UUID userId, Collection<SessionStatus> statuses);
 
     // Spec D9: one active session per user AND per vehicle. The caller passes
     // the set of statuses that count as "active".

@@ -25,17 +25,25 @@ public class SessionMapper {
 
     public static SessionDto toDto(ParkingSession session) {
 
+        // A CREATED session (started in the app, not yet authorized at the
+        // gate) has no entryTimestamp yet: the backend clock starts only when
+        // the gate opens (spec D3/D19). Report zero rather than NPE so
+        // GET /sessions/active works in that state too.
         Instant start = session.getEntryTimestamp();
-        Duration duration = Duration.between(session.getEntryTimestamp(), Instant.now());
-        PricingPolicy policy = session.getFacility().getPricingPolicy();
 
-        BigDecimal priceRate = switch (session.getVehicle().getVehicleType()) {
-            case MC -> policy.mcRate();
-            case LMV -> policy.lmvRate();
-            case HMV -> policy.hmvRate();
-        };
+        BigDecimal estimatedPrice = BigDecimal.ZERO;
+        if (start != null) {
+            Duration duration = Duration.between(start, Instant.now());
+            PricingPolicy policy = session.getFacility().getPricingPolicy();
 
-        BigDecimal estimatedPrice = priceRate.multiply(BigDecimal.valueOf(duration.getSeconds()));
+            BigDecimal priceRate = switch (session.getVehicle().getVehicleType()) {
+                case MC -> policy.mcRate();
+                case LMV -> policy.lmvRate();
+                case HMV -> policy.hmvRate();
+            };
+
+            estimatedPrice = priceRate.multiply(BigDecimal.valueOf(duration.getSeconds()));
+        }
 
         return new SessionDto(
                 session.getSessionId(),
