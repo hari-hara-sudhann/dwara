@@ -22,7 +22,9 @@ import java.nio.charset.StandardCharsets;
  * Security posture for spec §5/D13:
  *
  * <ul>
- *   <li>{@code /auth/**} is public.</li>
+ *   <li>{@code /auth/**} is public, and so is {@code /actuator/health} — the
+ *       compose healthcheck calls it without credentials. No other actuator
+ *       endpoint is exposed (application.yaml limits exposure to {@code health}).</li>
  *   <li>Administration endpoints are allowed through the chain but are guarded
  *       by {@link AdminKeyFilter} before authorization runs.</li>
  *   <li>{@code /gate/validate} and {@code /devices/{id}/commands} are the
@@ -65,7 +67,7 @@ public class SecurityConfig {
                         .accessDeniedHandler((request, response, ex) ->
                                 writeJson(response, HttpStatus.FORBIDDEN, FORBIDDEN_BODY)))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/auth/**", "/error").permitAll()
+                        .requestMatchers("/auth/**", "/error", "/actuator/health").permitAll()
                         // ESP32 device-secret endpoints (validated in the controller).
                         .requestMatchers(HttpMethod.POST, "/gate/validate").permitAll()
                         .requestMatchers(HttpMethod.GET, "/devices/*/commands").permitAll()

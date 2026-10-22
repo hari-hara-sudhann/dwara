@@ -1,0 +1,131 @@
+\chapter{Introduction}
+
+\section{Background and Motivation}
+
+Parking is one of the last everyday transactions that still expects the driver to
+interact with dedicated equipment. A typical urban facility installs a barrier, a
+ticket dispenser or an RFID reader, a payment kiosk and, increasingly, a set of
+cameras for number-plate recognition. Each item adds capital cost, a maintenance
+visit and an independent attack surface, and all of it must be commissioned before
+the first vehicle can enter. The hardware exists because a car has no identity that
+a server can verify. The driver, however, does: a smartphone can authenticate a
+person to a backend, display a price and authorise a payment.
+
+Bluetooth Low Energy (BLE) completes the picture at the gate. BLE advertisements
+are cheap to broadcast, readable by any modern phone, and can carry a facility
+identifier without a network connection. Research on BLE-beacon parking has shown
+that proximity-based discovery and automated payment are practical on commodity
+phones \cite{mackey2020}, and surveys of IoT parking report the same direction:
+sensing and connectivity move into low-cost devices while the business logic moves
+into a backend \cite{alam2023,biyik2021}. What most of that work optimises is
+\emph{occupancy sensing} --- finding a free bay --- while the barrier itself remains
+a conventional, locally controlled device.
+
+\project{} takes the opposite emphasis. It is not an occupancy system; it is a gate
+controller. One ESP32 advertises its facility over BLE. The React Native
+application in the driver's phone discovers the gate, starts a parking session on
+the backend, and then writes the session identifier to the gate. The gate asks the
+backend whether that session may pass, and moves a servo only when the answer is
+\code{open}. There is no camera, no RFID tag, no ticket and no vehicle sensor. The
+phone replaces the ticket, and the backend replaces the local decision.
+
+The Indian toll ecosystem shows both the promise and the limit of vehicle-bound
+tags: the National Electronic Toll Collection (NETC) programme issues a FASTag
+RFID sticker per vehicle and settles tolls through a central system
+\cite{npci2024}. That model works because a toll is a fixed charge at a fixed
+point. Parking is neither: the charge depends on how long the vehicle stayed, and
+the exit decision depends on whether it has been paid. \project{} therefore attaches
+identity to the \emph{person} and time to the \emph{server}, which is what makes
+per-second billing possible.
+
+\section{Problem Statement}
+
+Design and build a parking gate system in which:
+
+\begin{enumerate}
+  \item a driver discovers a nearby facility without scanning a QR code, typing a
+        code or sharing a location;
+  \item every entry and exit is authorised by a server, so that a forged client
+        cannot manufacture permission to open a gate;
+  \item billing is proportional to the actual time parked and is frozen the moment
+        payment succeeds, with no clock controlled by the phone or the gate;
+  \item the parking state machine cannot be driven into an invalid configuration
+        by replaying requests, double-tapping a button or abandoning a session;
+  \item the complete system --- backend, mobile application and gate firmware ---
+        can be built, run and verified on a developer machine before any hardware
+        is flashed.
+\end{enumerate}
+
+\section{Objectives}
+
+\begin{enumerate}
+  \item \textbf{Frictionless discovery.} Advertise the facility identity from the
+        gate itself over BLE and resolve facility details from the backend.
+  \item \textbf{Server-authoritative gate control.} Make the firmware a courier
+        that acts only on a backend verdict and fails closed when the backend is
+        unreachable.
+  \item \textbf{Auditable per-second billing.} Compute every amount from the
+        backend clock and the facility's pricing policy, and never accept a time
+        or a price from the client.
+  \item \textbf{A safe session lifecycle.} Enforce one active session per user and
+        per vehicle, abort sessions that never reach a gate, and define a verdict
+        for every illegal transition in advance.
+  \item \textbf{A complete three-surface deliverable.} Deliver the Spring Boot
+        backend, the Expo/React Native application and the ESP32 Arduino firmware
+        from one repository with one configuration model.
+  \item \textbf{Reproducible verification.} Provide one command that builds the
+        images, boots the real application, runs the automated suite, enforces a
+        coverage gate and publishes reports.
+\end{enumerate}
+
+\section{Scope and Limitations}
+
+The version-one scope is deliberately narrow. Table~\ref{tab:scope} separates what
+is implemented from what is excluded, and lists the limitations that follow from
+the design decisions rather than from missing work.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{In scope} & \textbf{Out of scope (version one)} \\
+    \midrule
+    Registration, login and profile restore with JWT &
+      Administrator user role or an operator web console \\
+    Vehicle CRUD with number plate and class (MC/LMV/HMV) &
+      Real payment-gateway integration, refunds and wallets \\
+    BLE facility discovery from the gate's advertisement &
+      GPS, QR-code or manual-code discovery \\
+    Backend-authorised entry and exit with reason codes &
+      Multi-gate facilities or more than one servo per site \\
+    Per-second billing with frozen fees and receipts &
+      Minimum fees, grace periods, daily caps, occupancy tracking \\
+    Session history with status filter and paging &
+      Heartbeats, over-the-air firmware updates, remote configuration \\
+    Device provisioning and remote open/keep-closed commands &
+      BLE pairing or encryption, iOS background BLE \\
+    Dockerised build, test workflow and coverage gate &
+      Production TLS termination and certificate management \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Scope of the delivered system.}
+  \label{tab:scope}
+\end{table}
+
+Four limitations are accepted by design and are not defects:
+
+\begin{itemize}
+  \item \textbf{Plaintext BLE.} The link carries a session identifier, not a
+        credential, and the gate re-validates every request with the backend, so
+        the worst outcome of writing a foreign identifier is a closed gate.
+  \item \textbf{Mock payment.} The provider sits behind a two-method interface and
+        always succeeds; no money moves. Replacing it is an implementation of the
+        interface, not a redesign.
+  \item \textbf{No sensors.} The gate closes on a fixed eight-second timer. It
+        cannot detect a tailgating vehicle, and it cannot detect a jammed arm except
+        by a bounded settle window. A mechanical push-through override is required
+        hardware.
+  \item \textbf{Foreground BLE.} Discovery and gate commands need the application in
+        the foreground and the phone within a few metres of the gate.
+\end{itemize}

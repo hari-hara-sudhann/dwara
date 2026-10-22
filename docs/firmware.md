@@ -80,7 +80,21 @@ Servo angles are abstract in `config.h`: `OPEN_ANGLE = 90`, `CLOSED_ANGLE = 0`, 
 
 Every request times out after `BACKEND_TIMEOUT_MS` (4 s). A WiFi or HTTP failure is reported to the app as `DENIED/BACKEND_UNREACHABLE`; a non-200 or malformed body is `DENIED/BACKEND_ERROR`. The gate never opens on a failed validation (fail closed, spec §7).
 
-`BackendClient::pollCommands()` is implemented against the same transport, but the sketch does not yet run the remote-command poller — that remains the parked D11 item.
+## Remote-command poller (D11)
+
+The gate loop also polls `GET /devices/{deviceId}/commands` every
+`COMMAND_POLL_INTERVAL_MS` (5 s). The poll is the acknowledgement: a queued
+`OPEN` or `KEEP_CLOSED` is delivered once and never repeated.
+
+- Polls only while the gate is closed and the actuator is idle, so a slow
+  request can never interrupt a movement or the 8 s auto-close timer.
+- On an unreachable backend it backs off to `BACKEND_RETRY_INTERVAL_MS` (2 s)
+  instead of hammering the server; the gate stays closed.
+- `OPEN` opens the gate (attendant override / fail-open recovery) and reports
+  the outcome over BLE with `sessionId: "remote"`. `KEEP_CLOSED` closes an open
+  gate.
+- Enabled only in the remote-auth build; the permissive bench build passes a
+  null backend and the poller is compiled out.
 
 ## Serial demo path (not production)
 
@@ -128,6 +142,8 @@ Full details, protocol fields, and troubleshooting: [`docs/serial-bridge.md`](se
   - Malformed payload → `DENIED/MALFORMED_COMMAND`.
 - **Auto-close:** fixed timer (`GATE_OPEN_HOLD_MS`, 8 s) after opening, then `CLOSED` once the servo settles.
 - **One movement at a time:** a command arriving while the actuator is busy is denied with `ACTUATOR_FAULT`; the app can retry.
+- **Watchdog:** if a sweep exceeds `ACTUATOR_SETTLE_TIMEOUT_MS`, the servo is driven back to `CLOSED`, the PWM signal is released (no standing current in a jammed servo), `FAULT` is latched and `DENIED/ACTUATOR_FAULT` reported. The gate then stays closed until reset.
+- **Remote commands:** the backend can queue `OPEN` / `KEEP_CLOSED`; the poller executes them only while the gate is idle.
 
 ## Config reference (`config.h`)
 
@@ -139,8 +155,12 @@ Full details, protocol fields, and troubleshooting: [`docs/serial-bridge.md`](se
 | `BACKEND_TIMEOUT_MS` | `4000` | HTTP request timeout |
 | `WIFI_CONNECT_TIMEOUT_MS` | `10000` | WiFi association wait |
 | `SERIAL_BRIDGE_TIMEOUT_MS` | `6000` | Serial demo frame wait |
-| `COMMAND_POLL_INTERVAL_MS` | `5000` | Reserved for the parked remote-command poller |
+| `COMMAND_POLL_INTERVAL_MS` | `5000` | Remote-command poll period |
+| `BACKEND_RETRY_INTERVAL_MS` | `2000` | Backoff after an unreachable backend |
 | `ACTUATOR_PIN` | `27` | Servo signal |
+| `SERVO_SETTLE_MS` | `800` | Sweep completion window before reporting `OPENED` |
+| `ACTUATOR_SETTLE_TIMEOUT_MS` | `3000` | Stall watchdog: force closed, release PWM, latch `FAULT` |
+| `DWARA_FORCE_ACTUATOR_FAULT` | `0` | Bench-only: `1` makes the watchdog fire on purpose |
 | `GATE_OPEN_HOLD_MS` | `8000` | Auto-close delay |
 
 ## Legacy: LED actuator
@@ -159,5 +179,11 @@ The LED was the original workaround for MG90S supply sag; the servo build is cur
 - Secrets in `config.h` are placeholders — fill `WIFI_*`, `DEVICE_ID`, `DEVICE_SECRET`, `BACKEND_BASE_URL`, and `FACILITY_CODE` per device before flashing (spec D7).
 - Plaintext BLE by design in v1 (spec D6); HTTP (not HTTPS) for bring-up — switch `BACKEND_BASE_URL` to TLS before real deployment.
 - The serial bridge is a demonstration aid and will not ship in production.
-- The remote-command poller is not wired into the gate loop yet (D11 follow-up).
+- There is no servo position feedback, so a physically stalled arm is detected only by the bounded settle window, not by measuring force or position.
 - `dwara-gate.ino` compiles only for ESP32 targets (BLE + WiFi are board-specific).
+
+## Compile check
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app firmware/dwara-gate
+```

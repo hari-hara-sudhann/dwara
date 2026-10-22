@@ -2,9 +2,15 @@ package me.hari.dwara.repositories;
 
 import me.hari.dwara.entities.ParkingSession;
 import me.hari.dwara.entities.enums.SessionStatus;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import jakarta.persistence.LockModeType;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -26,4 +32,16 @@ public interface ParkingSessionRepository extends JpaRepository<ParkingSession, 
 
     // Spec D20: CREATED sessions the user never validated at a gate.
     List<ParkingSession> findBySessionStatusAndCreatedAtBefore(SessionStatus sessionStatus, Instant cutoff);
+
+    // GET /sessions history: own sessions, newest first, optionally filtered.
+    Page<ParkingSession> findByUser_UserIdAndSessionStatusIn(
+            UUID userId, Collection<SessionStatus> statuses, Pageable pageable);
+
+    /**
+     * Row lock for payment: two concurrent pay calls must not both charge.
+     * Requires an active transaction (the service method is @Transactional).
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from ParkingSession s where s.sessionId = :sessionId")
+    Optional<ParkingSession> findByIdForUpdate(@Param("sessionId") UUID sessionId);
 }

@@ -182,6 +182,8 @@ class GateControllerServiceImplTest {
         assertEquals(GateDecision.OPEN, result.getResponse().decision());
         assertEquals(DenyReason.NONE, result.getResponse().reason());
         assertEquals(SessionStatus.EXITED, session.getSessionStatus());
+        assertNotNull(session.getExitTimestamp(), "exit time is stamped at the exit gate");
+        assertNotNull(session.getExitGateOpenedAt(), "grace window anchors at the gate open");
         verify(sessionRepository).save(session);
     }
 
@@ -242,7 +244,7 @@ class GateControllerServiceImplTest {
         ParkingFacility facility = facility();
         stubDeviceAt(facility);
         ParkingSession session = session(facility, SessionStatus.EXITED);
-        session.setExitTimestamp(Instant.now().minusSeconds(2));
+        session.setExitGateOpenedAt(Instant.now().minusSeconds(2));
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
 
         ResponseObject<GateDecisionDto> result = service.openExitGate(DEVICE_ID, SESSION_ID);
@@ -256,7 +258,7 @@ class GateControllerServiceImplTest {
         ParkingFacility facility = facility();
         stubDeviceAt(facility);
         ParkingSession session = session(facility, SessionStatus.EXITED);
-        session.setExitTimestamp(Instant.now().minusSeconds(60));
+        session.setExitGateOpenedAt(Instant.now().minusSeconds(60));
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
 
         ResponseObject<GateDecisionDto> result = service.openExitGate(DEVICE_ID, SESSION_ID);
@@ -265,7 +267,7 @@ class GateControllerServiceImplTest {
     }
 
     @Test
-    void exit_refusesExitedSessionWithNoExitTimestamp() {
+    void exit_refusesExitedSessionWithNoGateOpenTimestamp() {
         ParkingFacility facility = facility();
         stubDeviceAt(facility);
         ParkingSession session = session(facility, SessionStatus.EXITED);

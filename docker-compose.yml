@@ -1,8 +1,8 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: dwara-postgres
-    restart: unless-stopped
+    container_name: ${POSTGRES_CONTAINER_NAME:-dwara-postgres}
+    restart: ${BACKEND_RESTART_POLICY:-unless-stopped}
 
     environment:
       POSTGRES_USER: ${DB_USER}
@@ -14,6 +14,9 @@ services:
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Creates dwara_test on a fresh data directory. Harmless for the dev
+      # stack (it only adds a second, empty database).
+      - ./docker/postgres/init-test-db.sql:/docker-entrypoint-initdb.d/10-test-db.sql:ro
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
@@ -26,8 +29,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: dwara-backend
-    restart: unless-stopped
+      # Explicit: the Dockerfile's last stage is the test runner.
+      target: runtime
+    container_name: ${BACKEND_CONTAINER_NAME:-dwara-backend}
+    restart: ${BACKEND_RESTART_POLICY:-unless-stopped}
 
     # JWT_SECRET / JWT_EXPIRATION live in .env and application.yaml has no
     # defaults for them, so without this the context fails to start.
@@ -47,9 +52,57 @@ services:
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       SPRING_JPA_OPEN_IN_VIEW: "false"
 
+      # Admin surface for facility/device provisioning. Set DWARA_ADMIN_KEY in
+      # .env; blank closes the admin endpoints.
+      DWARA_ADMIN_KEY: ${DWARA_ADMIN_KEY:-}
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
     depends_on:
       postgres:
         condition: service_healthy
 
+  # Readiness gate only: proves the production image boots with the deployment
+  # config, then the test runner executes mvn verify against the same database.
+  # Started only with `--profile test` (scripts/docker-test.sh does this).
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    container_name: ${TEST_CONTAINER_NAME:-dwara-test-runner}
+    working_dir: /workspace
+    command: ["/bin/sh", "/workspace/scripts/run-tests-in-container.sh"]
+
+    environment:
+      SPRING_PROFILES_ACTIVE: test
+      TEST_DB_URL: jdbc:postgresql://postgres:5432/dwara_test
+      TEST_DB_USER: ${DB_USER}
+      TEST_DB_PASSWORD: ${DB_PASSWORD}
+      TEST_JWT_SECRET: ${TEST_JWT_SECRET:-}
+      TEST_JWT_EXPIRATION: ${TEST_JWT_EXPIRATION:-3600000}
+      TEST_ADMIN_KEY: ${TEST_ADMIN_KEY:-}
+
+    volumes:
+      - ./reports/junit:/reports/junit
+      - ./reports/jacoco:/reports/jacoco
+      - dwara-maven-cache:/root/.m2
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  # External so `docker compose down -v` in the test project cannot delete the
+  # warm dependency cache. Created by scripts/docker-test.sh when missing.
+  dwara-maven-cache:
+    external: true
+    name: dwara-maven-cache

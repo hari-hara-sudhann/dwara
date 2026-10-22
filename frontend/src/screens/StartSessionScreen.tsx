@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { View, Text, Pressable, ScrollView, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen, Card, SectionTitle, PrimaryButton, IconBadge } from "../components/ui";
-import { api } from "../services/mockApi";
-import { useApp } from "../context/AppContext";
+import { api } from "../services/api";
+import { useApp, hourlyRate, ratePerSecond, vehicleTypeLabel } from "../context/AppContext";
 import type { ParkingFacility } from "../types";
 import type { StackScreenProps } from "../navigation/types";
 
@@ -11,17 +11,28 @@ export function StartSessionScreen({ route, navigation }: StackScreenProps<"Star
   const { vehicles, refreshActiveSession } = useApp();
   const facilityCode = route.params.facilityCode;
   const [facility, setFacility] = useState<ParkingFacility | null>(null);
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(vehicles[0]?.id ?? null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(
+    vehicles[0]?.vehicleId ?? null
+  );
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    api.getFacility(facilityCode).then((res) => {
+    let cancelled = false;
+    void api.getFacility(facilityCode).then((res) => {
+      if (cancelled) return;
       if (res.success) setFacility(res.data);
+      else setLoadError(res.message);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [facilityCode]);
 
+  const selectedVehicle = vehicles.find((v) => v.vehicleId === selectedVehicleId) ?? null;
+
   const start = async () => {
-    if (!selectedVehicleId) return;
+    if (!selectedVehicleId || creating) return;
     setCreating(true);
     const res = await api.createSession({ facilityCode, vehicleId: selectedVehicleId });
     setCreating(false);
@@ -29,8 +40,9 @@ export function StartSessionScreen({ route, navigation }: StackScreenProps<"Star
       Alert.alert("Can't start session", res.message);
       return;
     }
+    // POST /sessions returns only the new UUID; fetch the full session.
     await refreshActiveSession();
-    navigation.navigate("ActiveSession", { sessionId: res.data.id });
+    navigation.navigate("ActiveSession", { sessionId: res.data });
   };
 
   return (
@@ -47,54 +59,72 @@ export function StartSessionScreen({ route, navigation }: StackScreenProps<"Star
                 <Text className="text-muted text-sm mt-0.5">{facility.address}</Text>
               </View>
             </View>
+            {facility.status !== "ACTIVE" ? (
+              <Text className="text-red-500 text-sm mt-2">
+                This facility is {facility.status.toLowerCase()} and is not accepting sessions.
+              </Text>
+            ) : null}
           </Card>
         ) : (
           <Card>
-            <Text className="text-muted text-sm leading-relaxed">Loading facility…</Text>
+            <Text className="text-muted text-sm leading-relaxed">
+              {loadError ?? "Loading facility…"}
+            </Text>
           </Card>
         )}
 
         <SectionTitle title="Vehicle" />
-        {vehicles.map((v) => {
-          const selected = v.id === selectedVehicleId;
-          return (
-            <Pressable key={v.id} onPress={() => setSelectedVehicleId(v.id)}>
-              <Card className={selected ? "border border-brand" : ""}>
-                <View className="flex-row items-center">
-                  <IconBadge icon="car" />
-                  <View className="ml-4 flex-1">
-                    <Text className="text-primary font-bold text-base">{v.licensePlate}</Text>
-                    <Text className="text-muted text-sm mt-0.5">
-                      {v.make} {v.model}
-                    </Text>
+        {vehicles.length === 0 ? (
+          <Card>
+            <Text className="text-primary font-bold text-base mb-1">No vehicles yet</Text>
+            <Text className="text-muted text-sm leading-relaxed mb-4">
+              Register a number plate in Profile before starting a session.
+            </Text>
+            <PrimaryButton
+              label="Go to Profile"
+              onPress={() => navigation.navigate("Tabs", { screen: "Profile" })}
+            />
+          </Card>
+        ) : (
+          vehicles.map((v) => {
+            const selected = v.vehicleId === selectedVehicleId;
+            return (
+              <Pressable key={v.vehicleId} onPress={() => setSelectedVehicleId(v.vehicleId)}>
+                <Card className={selected ? "border border-brand" : ""}>
+                  <View className="flex-row items-center">
+                    <IconBadge icon="car" />
+                    <View className="ml-4 flex-1">
+                      <Text className="text-primary font-bold text-base">{v.numberPlate}</Text>
+                      <Text className="text-muted text-sm mt-0.5">{vehicleTypeLabel(v.type)}</Text>
+                    </View>
+                    <Ionicons
+                      name={selected ? "checkmark-circle" : "ellipse-outline"}
+                      size={24}
+                      color={selected ? "#00B177" : "#6B7280"}
+                    />
                   </View>
-                  <Ionicons
-                    name={selected ? "checkmark-circle" : "ellipse-outline"}
-                    size={24}
-                    color={selected ? "#00B177" : "#6B7280"}
-                  />
-                </View>
-              </Card>
-            </Pressable>
-          );
-        })}
+                </Card>
+              </Pressable>
+            );
+          })
+        )}
 
-        {facility ? (
+        {facility && selectedVehicle ? (
           <Card>
             <View className="flex-row justify-between">
               <View className="items-center flex-1">
                 <Text className="text-primary font-bold text-sm">
-                  ₹{(facility.ratePerSecond * 3600).toFixed(0)}/hr
+                  {hourlyRate(ratePerSecond(facility, selectedVehicle.type))}
                 </Text>
-                <Text className="text-muted text-xs mt-0.5">flat rate</Text>
+                <Text className="text-muted text-xs mt-0.5">your rate</Text>
               </View>
               <View className="items-center flex-1">
                 <Text className="text-primary font-bold text-sm">per-second</Text>
                 <Text className="text-muted text-xs mt-0.5">billing</Text>
               </View>
               <View className="items-center flex-1">
-                <Text className="text-primary font-bold text-sm">{facility.availableSlots}</Text>
-                <Text className="text-muted text-xs mt-0.5">free slots</Text>
+                <Text className="text-primary font-bold text-sm">{facility.status}</Text>
+                <Text className="text-muted text-xs mt-0.5">facility</Text>
               </View>
             </View>
           </Card>

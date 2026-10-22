@@ -4,6 +4,7 @@ import me.hari.dwara.configs.SessionProperties;
 import me.hari.dwara.dtos.ResponseObject;
 import me.hari.dwara.dtos.parkingsession.SessionCreationRequestDto;
 import me.hari.dwara.dtos.parkingsession.SessionDto;
+import me.hari.dwara.dtos.parkingsession.SessionPageDto;
 import me.hari.dwara.dtos.payment.PaymentOutcome;
 import me.hari.dwara.dtos.payment.PaymentReceiptDto;
 import me.hari.dwara.entities.ParkingFacility;
@@ -25,6 +26,10 @@ import me.hari.dwara.services.interfaces.PaymentService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -93,7 +98,7 @@ class ParkingSessionServiceTest {
 
     @Test
     void createSession_refusesAnUnknownUser() {
-        when(userRepository.findById(USER_ID)).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.empty());
 
         ResponseObject<UUID> result = service.createSession(creationRequest());
 
@@ -104,7 +109,7 @@ class ParkingSessionServiceTest {
 
     @Test
     void createSession_refusesAnUnknownFacility() {
-        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
+        when(userRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
         when(facilityRepository.findByFacilityCode(CODE)).thenReturn(Optional.empty());
 
         ResponseObject<UUID> result = service.createSession(creationRequest());
@@ -116,7 +121,7 @@ class ParkingSessionServiceTest {
     @Test
     void createSession_refusesAFacilityThatIsNotActive() {
         ParkingFacility facility = facility(ParkingFacilityStatus.MAINTENANCE);
-        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
+        when(userRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
         when(facilityRepository.findByFacilityCode(CODE)).thenReturn(Optional.of(facility));
 
         ResponseObject<UUID> result = service.createSession(creationRequest());
@@ -128,7 +133,7 @@ class ParkingSessionServiceTest {
 
     @Test
     void createSession_refusesAnUnknownVehicle() {
-        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
+        when(userRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
         when(facilityRepository.findByFacilityCode(CODE)).thenReturn(Optional.of(facility(ACTIVE)));
         when(vehicleRepository.findById(VEHICLE_ID)).thenReturn(Optional.empty());
 
@@ -140,7 +145,7 @@ class ParkingSessionServiceTest {
 
     @Test
     void createSession_refusesSomeoneElsesVehicle() {
-        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
+        when(userRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
         when(facilityRepository.findByFacilityCode(CODE)).thenReturn(Optional.of(facility(ACTIVE)));
         when(vehicleRepository.findById(VEHICLE_ID)).thenReturn(Optional.of(vehicle(OTHER_USER_ID)));
 
@@ -275,7 +280,7 @@ class ParkingSessionServiceTest {
 
     @Test
     void pay_refusesAnUnknownSession() {
-        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.empty());
+        when(sessionRepository.findByIdForUpdate(SESSION_ID)).thenReturn(Optional.empty());
 
         assertFalse(service.pay(SESSION_ID).getSuccess());
         verify(paymentService, never()).charge(any(), any());
@@ -284,7 +289,7 @@ class ParkingSessionServiceTest {
     @Test
     void pay_refusesASessionThatWasNeverParked() {
         ParkingSession session = session(SessionStatus.CREATED);
-        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+        when(sessionRepository.findByIdForUpdate(SESSION_ID)).thenReturn(Optional.of(session));
 
         ResponseObject<PaymentReceiptDto> result = service.pay(SESSION_ID);
 
@@ -296,7 +301,7 @@ class ParkingSessionServiceTest {
     @Test
     void pay_refusesWhenTheGatewayDeclines() {
         ParkingSession session = parkedSession();
-        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+        when(sessionRepository.findByIdForUpdate(SESSION_ID)).thenReturn(Optional.of(session));
         when(paymentService.charge(any(), any())).thenReturn(new PaymentOutcome(false, null));
 
         ResponseObject<PaymentReceiptDto> result = service.pay(SESSION_ID);
@@ -311,7 +316,7 @@ class ParkingSessionServiceTest {
     void pay_refusesAnotherUsersSession() {
         ParkingSession session = parkedSession();
         session.getUser().setUserId(OTHER_USER_ID);
-        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+        when(sessionRepository.findByIdForUpdate(SESSION_ID)).thenReturn(Optional.of(session));
 
         ResponseObject<PaymentReceiptDto> result = service.pay(SESSION_ID, USER_ID);
 
@@ -324,7 +329,7 @@ class ParkingSessionServiceTest {
     @Test
     void pay_freezesTheRoundedFeeAndMovesTheSessionToPaymentPending() {
         ParkingSession session = parkedSession();
-        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+        when(sessionRepository.findByIdForUpdate(SESSION_ID)).thenReturn(Optional.of(session));
         when(paymentService.charge(eq(SESSION_ID), any()))
                 .thenReturn(new PaymentOutcome(true, "MOCK-ref-1"));
 
@@ -341,7 +346,9 @@ class ParkingSessionServiceTest {
 
         assertEquals(0, expected.compareTo(session.getTotalFee()));
         assertEquals(SessionStatus.PAYMENT_PENDING, session.getSessionStatus());
-        assertNotNull(session.getExitTimestamp(), "fee stops accruing at payment (D19)");
+        // The exit timestamp belongs to the exit gate (spec §10 #5 grace window),
+        // not to payment; the fee is frozen via totalFee instead.
+        assertNull(session.getExitTimestamp());
         verify(sessionRepository).save(session);
 
         ArgumentCaptor<Payment> savedPayment = ArgumentCaptor.forClass(Payment.class);
@@ -445,6 +452,18 @@ class ParkingSessionServiceTest {
     }
 
     @Test
+    void getParkingFee_returnsTheFrozenAmountAfterPayment() {
+        ParkingSession session = parkedSession();
+        session.setTotalFee(new BigDecimal("3.45"));
+        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+
+        ResponseObject<BigDecimal> result = service.getParkingFee(SESSION_ID, USER_ID);
+
+        assertTrue(result.getSuccess());
+        assertEquals(0, new BigDecimal("3.45").compareTo(result.getResponse()));
+    }
+
+    @Test
     void getParkingFee_refusesACreatedSessionBeforeEntry() {
         when(sessionRepository.findById(SESSION_ID))
                 .thenReturn(Optional.of(session(SessionStatus.CREATED)));
@@ -455,10 +474,48 @@ class ParkingSessionServiceTest {
         assertEquals("Session has not been parked yet.", result.getMessage());
     }
 
+    // --------------------------------------------------------- listSessions --
+
+    @Test
+    void listSessions_returnsTheOwnersPageNewestFirst() {
+        ParkingSession session = parkedSession();
+        Page<ParkingSession> page = new PageImpl<>(List.of(session), PageRequest.of(0, 20), 1);
+        when(sessionRepository.findByUser_UserIdAndSessionStatusIn(
+                eq(USER_ID), any(), any(Pageable.class))).thenReturn(page);
+
+        ResponseObject<SessionPageDto> result =
+                service.listSessions(USER_ID, null, 0, 20);
+
+        assertTrue(result.getSuccess());
+        assertEquals(1, result.getResponse().sessions().size());
+        assertEquals(SESSION_ID, result.getResponse().sessions().get(0).sessionId());
+        assertEquals(1, result.getResponse().totalElements());
+        assertEquals(0, result.getResponse().page());
+    }
+
+    @Test
+    void listSessions_clampsNegativePagesAndOversizedPages() {
+        Page<ParkingSession> empty = new PageImpl<>(List.of());
+        when(sessionRepository.findByUser_UserIdAndSessionStatusIn(
+                eq(USER_ID), any(), any(Pageable.class))).thenReturn(empty);
+
+        ResponseObject<SessionPageDto> result =
+                service.listSessions(USER_ID, SessionStatus.EXITED, -3, 5000);
+
+        assertTrue(result.getSuccess());
+        assertTrue(result.getResponse().sessions().isEmpty());
+
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(sessionRepository).findByUser_UserIdAndSessionStatusIn(
+                eq(USER_ID), eq(List.of(SessionStatus.EXITED)), pageable.capture());
+        assertEquals(0, pageable.getValue().getPageNumber());
+        assertEquals(100, pageable.getValue().getPageSize());
+    }
+
     // -------------------------------------------------------------- helpers --
 
     private void stubResolvableParties() {
-        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
+        when(userRepository.findByIdForUpdate(USER_ID)).thenReturn(Optional.of(user(USER_ID)));
         when(facilityRepository.findByFacilityCode(CODE)).thenReturn(Optional.of(facility(ACTIVE)));
         when(vehicleRepository.findById(VEHICLE_ID)).thenReturn(Optional.of(vehicle(USER_ID)));
     }

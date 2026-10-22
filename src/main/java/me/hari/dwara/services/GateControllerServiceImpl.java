@@ -119,7 +119,13 @@ public class GateControllerServiceImpl implements GateControllerService {
                 if (!hasSuccessfulPayment(session)) {
                     return keepClosed(DenyReason.PAYMENT_REQUIRED);
                 }
+                // The exit timestamp is stamped here, not at payment: it is
+                // when the car actually leaves, and it anchors the grace
+                // window for a re-approach (spec §10 #5).
+                Instant exitedAt = Instant.now();
                 session.setSessionStatus(SessionStatus.EXITED);
+                session.setExitTimestamp(exitedAt);
+                session.setExitGateOpenedAt(exitedAt);
                 sessionRepository.save(session);
                 return open();
             }
@@ -146,9 +152,11 @@ public class GateControllerServiceImpl implements GateControllerService {
     }
 
     private boolean withinExitGraceWindow(ParkingSession session) {
-        Instant exitedAt = session.getExitTimestamp();
-        return exitedAt != null
-                && Instant.now().isBefore(exitedAt.plus(sessionProperties.exitGraceWindow()));
+        // Measured from the exit gate open — never from payment success, or a
+        // user who pays and then dawdles would lose the grace re-open.
+        Instant openedAt = session.getExitGateOpenedAt();
+        return openedAt != null
+                && Instant.now().isBefore(openedAt.plus(sessionProperties.exitGraceWindow()));
     }
 
     private static ResponseObject<GateDecisionDto> open() {

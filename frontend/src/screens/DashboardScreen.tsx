@@ -1,53 +1,57 @@
-import { useEffect, useState } from "react";
 import { View, Text, Pressable, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen, Card, PrimaryButton, SectionTitle, IconBadge } from "../components/ui";
-import { useApp, formatFee } from "../context/AppContext";
-import type { ParkingFacility } from "../types";
-import { api } from "../services/mockApi";
+import { useApp, vehicleTypeLabel } from "../context/AppContext";
 import type { TabScreenProps } from "../navigation/types";
 
 export function DashboardScreen({ navigation }: TabScreenProps<"Home">) {
   const { user, vehicles, activeSession } = useApp();
-  const [facility, setFacility] = useState<ParkingFacility | null>(null);
-
-  useEffect(() => {
-    if (!activeSession) return;
-    void api.getFacility("DW001").then((res) => {
-      if (res.success) setFacility(res.data);
-    });
-  }, [activeSession]);
 
   return (
     <ScrollView className="flex-1" showsVerticalScrollIndicator={false} contentContainerClassName="pb-36">
       <Screen>
-        <SectionTitle title={`Hi, ${user?.name ?? "there"} 👋`} subtitle="Here's your parking at a glance." />
+        <SectionTitle
+          title={`Hi, ${user?.name ?? "there"} 👋`}
+          subtitle="Here's your parking at a glance."
+        />
 
         {activeSession ? (
-          <Pressable onPress={() => navigation.navigate("ActiveSession", { sessionId: activeSession.id })}>
+          <Pressable
+            onPress={() =>
+              navigation.navigate("ActiveSession", { sessionId: activeSession.sessionId })
+            }
+          >
             <Card>
               <View className="flex-row items-center mb-4">
-                <IconBadge icon={activeSession.status === "CREATED" ? "log-in" : "car"} />
+                <IconBadge icon={activeSession.sessionStatus === "CREATED" ? "log-in" : "car"} />
                 <View className="ml-4 flex-1">
                   <Text className="text-primary font-bold text-base">Active session</Text>
                   <Text className="text-muted text-sm mt-0.5">
-                    {facility?.name ?? "Loading facility…"}
+                    {activeSession.facilityName}
                   </Text>
                 </View>
                 <View className="bg-brand-tint rounded-full px-3 py-1">
-                  <Text className="text-brand text-xs font-semibold">{activeSession.status}</Text>
+                  <Text className="text-brand text-xs font-semibold">
+                    {activeSession.sessionStatus}
+                  </Text>
                 </View>
               </View>
-              {activeSession.status === "CREATED" ? (
+              {activeSession.sessionStatus === "CREATED" ? (
                 <Text className="text-muted text-sm leading-relaxed mb-4">
-                  Hold your phone near the gate and tap "Open entry gate" when you're ready to drive in.
+                  Hold your phone near the gate and tap "Open entry gate" when you're ready to
+                  drive in.
                 </Text>
               ) : (
                 <Text className="text-muted text-sm leading-relaxed mb-4">
-                  Meter is running — fee updates every second while you're parked.
+                  Meter is running — the fee updates from the backend while you're parked.
                 </Text>
               )}
-              <PrimaryButton label="Open Session" onPress={() => navigation.navigate("ActiveSession", { sessionId: activeSession.id })} />
+              <PrimaryButton
+                label="Open Session"
+                onPress={() =>
+                  navigation.navigate("ActiveSession", { sessionId: activeSession.sessionId })
+                }
+              />
             </Card>
           </Pressable>
         ) : (
@@ -64,20 +68,26 @@ export function DashboardScreen({ navigation }: TabScreenProps<"Home">) {
         )}
 
         <SectionTitle title="Your vehicles" />
-        {vehicles.map((v) => (
-          <Card key={v.id}>
-            <View className="flex-row items-center">
-              <IconBadge icon={v.make === "Honda" ? "bicycle" : "car"} />
-              <View className="ml-4 flex-1">
-                <Text className="text-primary font-bold text-base">{v.licensePlate}</Text>
-                <Text className="text-muted text-sm mt-0.5">
-                  {v.make} {v.model} · {v.color}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color="#6B7280" />
-            </View>
+        {vehicles.length === 0 ? (
+          <Card>
+            <Text className="text-muted text-sm leading-relaxed">
+              No vehicles yet — add a number plate in Profile.
+            </Text>
           </Card>
-        ))}
+        ) : (
+          vehicles.map((v) => (
+            <Card key={v.vehicleId}>
+              <View className="flex-row items-center">
+                <IconBadge icon={v.type === "MC" ? "bicycle" : "car"} />
+                <View className="ml-4 flex-1">
+                  <Text className="text-primary font-bold text-base">{v.numberPlate}</Text>
+                  <Text className="text-muted text-sm mt-0.5">{vehicleTypeLabel(v.type)}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+              </View>
+            </Card>
+          ))
+        )}
 
         <Pressable onPress={() => navigation.navigate("Profile")}>
           <Card className="bg-brand-tint">

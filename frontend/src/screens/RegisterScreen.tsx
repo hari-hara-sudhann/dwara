@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { Screen, Card, Input, PrimaryButton, SectionTitle } from "../components/ui";
-import { api } from "../services/mockApi";
+import { api } from "../services/api";
 import { useApp } from "../context/AppContext";
 import type { StackScreenProps } from "../navigation/types";
 
@@ -9,16 +9,35 @@ export function RegisterScreen({ navigation }: StackScreenProps<"Register">) {
   const { signIn } = useApp();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    if (!name || !email || !phone || !password) return;
+    if (!name || !email || !password || loading) return;
+    setError(null);
     setLoading(true);
-    const res = await api.register({ name, email, phone, password });
-    setLoading(false);
-    if (res.success) signIn(res.data.user);
+    try {
+      const registered = await api.register({ name: name.trim(), email: email.trim(), password });
+      if (!registered.success) {
+        setError(registered.message);
+        return;
+      }
+      // Registration does not return a token: log in with the same credentials.
+      const login = await api.login({ email: email.trim(), password });
+      if (!login.success) {
+        setError(login.message);
+        return;
+      }
+      const me = await api.me();
+      if (!me.success) {
+        setError(me.message);
+        return;
+      }
+      signIn(me.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -41,19 +60,13 @@ export function RegisterScreen({ navigation }: StackScreenProps<"Register">) {
             onChangeText={setEmail}
           />
           <Input
-            label="Phone"
-            placeholder="+91 98765 43210"
-            keyboardType="phone-pad"
-            value={phone}
-            onChangeText={setPhone}
-          />
-          <Input
             label="Password"
             placeholder="••••••••"
             secureTextEntry
             value={password}
             onChangeText={setPassword}
           />
+          {error ? <Text className="text-red-500 text-sm mb-3">{error}</Text> : null}
           <PrimaryButton label="Sign Up" onPress={submit} loading={loading} />
         </Card>
 

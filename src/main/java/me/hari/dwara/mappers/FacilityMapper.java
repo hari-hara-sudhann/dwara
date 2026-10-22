@@ -24,7 +24,8 @@ public class FacilityMapper {
             facility.getFacilityCode(),
             facility.getName(),
             facility.getAddress(),
-            facility.getStatus()
+            facility.getStatus(),
+            facility.getPricingPolicy()
         );
     }
 

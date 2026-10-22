@@ -1,0 +1,369 @@
+{
+  "info": {
+    "_postman_id": "b7c0a0b4-1a4e-4f6a-9d3d-2a1c3f6e8a11",
+    "name": "Dwara API - Auth Controller",
+    "description": "Focused Postman tests for AuthController only: POST /auth/register (signup), POST /auth/login and GET /auth/me.\n\nSetup:\n- Set the `baseUrl` collection variable if the API is not on http://localhost:8080.\n- Set `password` if you want a different test password (default: hunter2).\n- `userEmail`, `userId` and `jwt` are populated automatically by the requests; run the folder top to bottom with the Collection Runner.\n- Each run registers one new account with a unique generated email, so repeated runs do not collide.\n\nNote on status codes: this API wraps business failures in a 200 response with `success: false` (see ResponseObject), so the register/login tests assert on the `success` flag and `message` rather than on HTTP status.\n\nKnown backend defect surfaced by `Me - no token`: `/auth/**` is permitAll in SecurityConfig, so a request with no (or an invalid) JWT reaches the controller with a null principal and `userRepository.findById(null)` fails, giving a 500 and Spring's default error body instead of the 401 the app expects. That assertion is intentionally kept at the documented contract; it fails until the controller guards a null `userId`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "description": "AuthController endpoints. Run in order: register -> duplicate register -> login -> me.",
+      "item": [
+        {
+          "name": "Register (signup)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh unique email on every run so the collection is repeatable.",
+                  "const suffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('userEmail', `postman.${suffix}@example.com`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Registration succeeded', () => {",
+                  "    pm.expect(body.success).to.eql(true);",
+                  "    pm.expect(body.message).to.eql('Registered successfully.');",
+                  "});",
+                  "pm.test('Payload carries the new user', () => {",
+                  "    pm.expect(body.data.userId).to.match(/^[0-9a-fA-F-]{36}$/);",
+                  "    pm.expect(body.data.email).to.eql(pm.collectionVariables.get('userEmail'));",
+                  "    pm.expect(body.data.name).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('No password material is returned', () => {",
+                  "    pm.expect(JSON.stringify(body)).to.not.include('passwordHash');",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('userId', body.data.userId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman User\",\n  \"email\": \"{{userEmail}}\",\n  \"rawPassword\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Creates a USER account (role is forced server-side). Saves `userId` for later assertions."
+          },
+          "response": []
+        },
+        {
+          "name": "Register - duplicate email",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('Duplicate email is rejected in the body', () => {",
+                  "    pm.expect(body.success).to.eql(false);",
+                  "    pm.expect(body.message).to.eql('User already exists.');",
+                  "    pm.expect(body.data).to.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman User\",\n  \"email\": \"{{userEmail}}\",\n  \"rawPassword\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Re-registering the email created by the previous request. Business failure is reported with HTTP 200 and success:false."
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Login succeeded', () => {",
+                  "    pm.expect(body.success).to.eql(true);",
+                  "    pm.expect(body.message).to.eql('Login successful.');",
+                  "});",
+                  "pm.test('JWT is returned', () => {",
+                  "    pm.expect(body.data.jwt).to.be.a('string').and.not.empty;",
+                  "    pm.expect(body.data.jwt.split('.')).to.have.lengthOf(3);",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('jwt', body.data.jwt);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Logs in with the account registered above and saves the token as `jwt`."
+          },
+          "response": []
+        },
+        {
+          "name": "Login - wrong password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('Bad credentials are rejected in the body', () => {",
+                  "    pm.expect(body.success).to.eql(false);",
+                  "    pm.expect(body.message).to.eql('Invalid credentials.');",
+                  "});",
+                  "pm.test('No token leaks on failure', () => {",
+                  "    pm.expect(body.data).to.eql(null);",
+                  "});",
+                  "pm.test('Previous token is left untouched', () => {",
+                  "    pm.expect(pm.collectionVariables.get('jwt')).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"definitely-not-the-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Same account, wrong password. Same generic message as an unknown email (no user enumeration)."
+          },
+          "response": []
+        },
+        {
+          "name": "Me (with JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('User found', () => {",
+                  "    pm.expect(body.success).to.eql(true);",
+                  "    pm.expect(body.message).to.eql('User found.');",
+                  "});",
+                  "pm.test('Identity matches the registered account', () => {",
+                  "    pm.expect(body.data.userId).to.eql(pm.collectionVariables.get('userId'));",
+                  "    pm.expect(body.data.email).to.eql(pm.collectionVariables.get('userEmail'));",
+                  "});",
+                  "pm.test('Token payload is not exposed', () => {",
+                  "    pm.expect(body.data).to.not.have.property('passwordHash');",
+                  "    pm.expect(body.data).to.not.have.property('jwt');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Resolves the bearer token saved by the Login request into the caller's profile."
+          },
+          "response": []
+        },
+        {
+          "name": "Me - no token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 401', () => pm.response.to.have.status(401));",
+                  "",
+                  "const body = pm.response.json();",
+                  "pm.test('Security entry point body', () => {",
+                  "    pm.expect(body.success).to.eql(false);",
+                  "    pm.expect(body.message).to.eql('Authentication required.');",
+                  "    pm.expect(body.data).to.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "No Authorization header, which the app expects to answer 401 so it can clear the stored token. Currently returns 500 with Spring's default error body: `/auth/**` is permitAll, so no security entry point runs and the controller gets a null principal (see the collection description). This assertion is the bug signal; it passes once the controller handles a null `userId`."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "password",
+      "value": "hunter2",
+      "type": "string"
+    },
+    {
+      "key": "userEmail",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "jwt",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
-import { Screen, Card, Input, PrimaryButton, SectionTitle, GhostButton } from "../components/ui";
-import { api } from "../services/mockApi";
+import { Screen, Card, Input, PrimaryButton, SectionTitle } from "../components/ui";
+import { api } from "../services/api";
 import { useApp } from "../context/AppContext";
 import type { StackScreenProps } from "../navigation/types";
 
@@ -10,13 +10,28 @@ export function LoginScreen({ navigation }: StackScreenProps<"Login">) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    if (!email || !password) return;
+    if (!email || !password || loading) return;
+    setError(null);
     setLoading(true);
-    const res = await api.login({ email, password });
-    setLoading(false);
-    if (res.success) signIn(res.data.user);
+    try {
+      const login = await api.login({ email: email.trim(), password });
+      if (!login.success) {
+        setError(login.message);
+        return;
+      }
+      // Login only returns the token; /auth/me resolves the profile behind it.
+      const me = await api.me();
+      if (!me.success) {
+        setError(me.message);
+        return;
+      }
+      signIn(me.data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -44,6 +59,7 @@ export function LoginScreen({ navigation }: StackScreenProps<"Login">) {
             value={password}
             onChangeText={setPassword}
           />
+          {error ? <Text className="text-red-500 text-sm mb-3">{error}</Text> : null}
           <PrimaryButton label="Sign In" onPress={submit} loading={loading} />
         </Card>
 

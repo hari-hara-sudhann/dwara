@@ -17,6 +17,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -142,6 +143,28 @@ class UserServiceTest {
 
         assertTrue(result.getSuccess());
         assertEquals("signed.jwt", result.getResponse().jwt());
+    }
+
+    // ------------------------------------------------------------- findUser --
+
+    @Test
+    void findUser_returnsTheProfileBehindTheToken() {
+        User user = user("BCRYPT-HASH");
+        user.setName("Hari");
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+
+        ResponseObject<RegisrationSuccessDto> result = service.findUser(USER_ID);
+
+        assertTrue(result.getSuccess());
+        assertEquals(USER_ID, result.getResponse().getUserId());
+        assertEquals("Hari", result.getResponse().getName());
+    }
+
+    @Test
+    void findUser_refusesATokenForADeletedUser() {
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.empty());
+
+        assertFalse(service.findUser(USER_ID).getSuccess());
     }
 
     // ------------------------------------------------------------- helpers --

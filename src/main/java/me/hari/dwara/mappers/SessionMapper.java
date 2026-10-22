@@ -35,20 +35,22 @@ public class SessionMapper {
         if (start != null) {
             Duration duration = Duration.between(start, Instant.now());
             PricingPolicy policy = session.getFacility().getPricingPolicy();
-
-            BigDecimal priceRate = switch (session.getVehicle().getVehicleType()) {
-                case MC -> policy.mcRate();
-                case LMV -> policy.lmvRate();
-                case HMV -> policy.hmvRate();
-            };
-
+            BigDecimal priceRate = policy.getRate(session.getVehicle().getVehicleType());
             estimatedPrice = priceRate.multiply(BigDecimal.valueOf(duration.getSeconds()));
         }
 
         return new SessionDto(
                 session.getSessionId(),
+                session.getSessionStatus(),
+                session.getFacility().getFacilityCode(),
+                session.getFacility().getName(),
+                session.getVehicle().getVehicleId(),
+                session.getVehicle().getNumberPlate(),
+                session.getCreatedAt(),
                 start,
-                estimatedPrice
+                session.getExitTimestamp(),
+                estimatedPrice,
+                session.getTotalFee()
         );
     }
 }

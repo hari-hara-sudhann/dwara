@@ -192,17 +192,22 @@ void DwaraBle::notifyOutcome(const GateOutcome &outcome) {
 
 class GateController {
  public:
-  GateController(AuthService &auth, DwaraBle &ble, GateActuator &actuator)
-      : _auth(auth), _ble(ble), _actuator(actuator) {}
+  // backend is null in the permissive bench build (DWARA_REMOTE_AUTH=0): the
+  // remote-command poller is then simply disabled.
+  GateController(AuthService &auth, DwaraBle &ble, GateActuator &actuator,
+                 BackendClient *backend)
+      : _auth(auth), _ble(ble), _actuator(actuator), _backend(backend) {}
 
   void begin() {
     _actuator.begin();
     _auth.begin();
+    _nextPollAt = millis() + COMMAND_POLL_INTERVAL_MS;
   }
 
   void tick() {
     handleQueuedCommands();
     handleAutoClose();
+    handleRemoteCommands();
     _actuator.tick();
     _auth.tick();
   }
@@ -253,16 +258,24 @@ class GateController {
 
   // Step 2: fixed-timer auto-close (spec D17) and outcome reporting.
   void handleAutoClose() {
-    if (_pendingReport && _actuator.hasSettled()) {
+    // Report an OPENED outcome only once the movement is finished, and never
+    // claim OPENED if the actuator latched a fault (spec §10 #12).
+    if (_pendingReport && !_actuator.isBusy()) {
       _pendingReport = false;
-      report(_outcome.sessionId, _outcome.result, _outcome.reason);
+      const bool faulted = _actuator.hasFaulted();
+      report(_outcome.sessionId,
+             faulted ? GateResult::FAULT : GateResult::OPENED,
+             faulted ? DenyReason::ACTUATOR_FAULT : DenyReason::NONE);
+      if (faulted) {
+        _open = false;
+        return;
+      }
     }
 
     if (_open && !_actuator.isBusy()) {
       if (_actuator.hasFaulted()) {
         report(_sessionId, GateResult::FAULT, DenyReason::ACTUATOR_FAULT);
         _open = false;
-        _actuator.close();  // best effort back to closed
         return;
       }
       if (millis() - _openedAt >= GATE_OPEN_HOLD_MS) {
@@ -273,10 +286,58 @@ class GateController {
       }
     }
 
-    if (_closePendingReport && !_open && _actuator.hasSettled()) {
+    if (_closePendingReport && !_open && !_actuator.isBusy()) {
       _closePendingReport = false;
-      report(_sessionId, GateResult::CLOSED, DenyReason::NONE);
+      const bool faulted = _actuator.hasFaulted();
+      report(_sessionId,
+             faulted ? GateResult::FAULT : GateResult::CLOSED,
+             faulted ? DenyReason::ACTUATOR_FAULT : DenyReason::NONE);
     }
+  }
+
+  // Step 3: remote-command poller (spec D11). The backend can open the gate
+  // for an attendant override / fail-open recovery; the ESP32 polls and the
+  // poll is the acknowledgement. Only polls while the gate is idle so a slow
+  // request can never interrupt a movement or the auto-close timer, and backs
+  // off when the backend is unreachable.
+  void handleRemoteCommands() {
+    if (_backend == nullptr) {
+      return;
+    }
+
+    const uint32_t now = millis();
+    if ((int32_t)(now - _nextPollAt) < 0) {
+      return;  // wraparound-safe "not due yet"
+    }
+
+    if (_open || _actuator.isBusy()) {
+      _nextPollAt = now + 500;  // try again shortly, never mid-movement
+      return;
+    }
+
+    bool reachable = false;
+    const RemoteCommand command = _backend->pollCommands(&reachable);
+
+    if (command == RemoteCommand::OPEN) {
+      Serial.println("[remote] OPEN from backend -> opening");
+      GateCommand remote{};
+      strlcpy(remote.sessionId, "remote", sizeof(remote.sessionId));
+      if (_actuator.open()) {
+        OpenSession(remote);
+        _pendingReport = true;
+      } else {
+        report(remote.sessionId, GateResult::FAULT, DenyReason::ACTUATOR_FAULT);
+      }
+    } else if (command == RemoteCommand::KEEP_CLOSED) {
+      Serial.println("[remote] KEEP_CLOSED from backend");
+      if (_open || _actuator.isBusy()) {
+        _actuator.close();
+        _open = false;
+      }
+    }
+
+    _nextPollAt = millis() +
+                  (reachable ? COMMAND_POLL_INTERVAL_MS : BACKEND_RETRY_INTERVAL_MS);
   }
 
   // Immediate close on the explicit CLOSE intent. Reports CLOSED once the
@@ -322,6 +383,8 @@ class GateController {
   AuthService &_auth;
   DwaraBle &_ble;
   GateActuator &_actuator;
+  BackendClient *_backend;
+  uint32_t _nextPollAt = 0;
 
   bool _open = false;
   uint32_t _openedAt = 0;
@@ -369,7 +432,13 @@ static const char *AUTH_MODE_NAME = "permissive";
 #endif
 static DwaraBle ble;
 static ServoGateActuator actuator(ACTUATOR_PIN, OPEN_ANGLE, CLOSED_ANGLE);  // MG90S on D27
-static GateController controller(auth, ble, actuator);
+static GateController controller(auth, ble, actuator,
+#if DWARA_REMOTE_AUTH
+                                 &backend
+#else
+                                 nullptr
+#endif
+);
 
 void setup() {
   Serial.begin(115200);

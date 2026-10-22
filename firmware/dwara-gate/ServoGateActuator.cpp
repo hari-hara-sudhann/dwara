@@ -22,6 +22,7 @@ ServoGateActuator::ServoGateActuator(uint8_t servoPin, uint8_t openAngle,
       _closedAngle(closedAngle),
       _phase(Phase::IDLE_CLOSED),
       _moveStartedAt(0),
+      _failsafeStartedAt(0),
       _settled(true),
       _faulted(false) {}
 
@@ -53,20 +54,48 @@ bool ServoGateActuator::close() {
 }
 
 void ServoGateActuator::tick() {
+  // Failsafe sweep in progress: hold CLOSED for a settle window, then release
+  // the PWM signal so a jammed servo cannot stay energised.
+  if (_phase == Phase::FAILSAFE) {
+    if (millis() - _failsafeStartedAt >= SERVO_SETTLE_MS) {
+      _servo.detach();
+      _phase = Phase::FAULT;
+      _settled = true;
+      Serial.println("[actuator] PWM released, gate latched CLOSED (fault)");
+    }
+    return;
+  }
+
   if (_phase != Phase::MOVING) {
     return;
   }
 
   const uint32_t elapsed = millis() - _moveStartedAt;
+
+  // Watchdog first: with no position feedback a stalled/miswired servo looks
+  // identical to a slow one, so a bounded settle window is the only safe test.
+  if (elapsed >= ACTUATOR_SETTLE_TIMEOUT_MS) {
+    Serial.println("[actuator] FAULT: settle timeout -> forcing CLOSED");
+    _faulted = true;
+    _settled = false;
+    _phase = Phase::FAILSAFE;
+    _failsafeStartedAt = millis();
+    _servo.write(_closedAngle);
+    return;
+  }
+
+#if !DWARA_FORCE_ACTUATOR_FAULT
   if (elapsed >= SERVO_SETTLE_MS) {
     _phase = _pendingEndPhase;
     _settled = true;
     Serial.println("[actuator] servo settled in position");
   }
+#endif
 }
 
 bool ServoGateActuator::isBusy() const {
-  return _phase == Phase::MOVING;
+  // FAILSAFE counts as busy so no new command can interrupt the recovery sweep.
+  return _phase == Phase::MOVING || _phase == Phase::FAILSAFE;
 }
 
 bool ServoGateActuator::hasSettled() const {
@@ -82,7 +111,7 @@ bool ServoGateActuator::hasFaulted() const {
 // ---------------------------------------------------------------------------
 
 bool ServoGateActuator::commandAngle(uint8_t angle, Phase endPhase) {
-  if (_phase == Phase::FAULT) {
+  if (_phase == Phase::FAULT || _phase == Phase::FAILSAFE) {
     return false;
   }
   if (isBusy()) {

@@ -1,6 +1,5 @@
 /**
- * Real implementation of BleClient against the ESP32 firmware
- * (firmware/dwara-gate). Protocol (config.h / docs/ble-protocol.md):
+ * Real BLE client for the ESP32 gate (firmware/dwara-gate). Protocol:
  *
  *   Advertisement local name:  DWARA-<facilityCode>
  *   Service UUID:              4fafc201-1fb5-459e-8fcc-c5c9c331914b
@@ -11,14 +10,16 @@
  * JSON command -> resolve with the first matching status notification (or
  * time out). Subscribing BEFORE writing avoids losing a fast notify.
  *
+ * The firmware is the only component that talks to the backend during a gate
+ * action; this client never decides whether a gate may open.
+ *
  * NOTE: react-native-ble-plx needs native code — this cannot run in Expo Go.
- * Build with `npx expo prebuild` + `npx expo run:ios` / `npx expo run:android`
- * (the config plugin in app.json handles BLE permissions).
+ * Build with `npx expo prebuild` + `npx expo run:ios` / `npx expo run:android`.
  */
 
 import { BleManager, type Device, type Subscription } from "@sfourdrinier/react-native-ble-plx";
 import { Buffer } from "buffer";
-import type { BleClient } from "./types";
+import type { GateOutcome, GateResult } from "../types";
 
 const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const COMMAND_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
@@ -26,9 +27,8 @@ const STATUS_CHAR_UUID = "c7d4a2d0-5f3a-4c3e-9b1a-8e2f6d4c5b7a";
 const NAME_PREFIX = "DWARA-";
 
 const SCAN_TIMEOUT_MS = 8000;
-const COMMAND_TIMEOUT_MS = 12000; // firmware settles the servo in <1s; generous for retries
-
-type GateResult = "OPENED" | "DENIED" | "FAULT" | "CLOSED";
+/** Backend validation + servo settle + 8 s hold: allow a generous round-trip. */
+const COMMAND_TIMEOUT_MS = 15000;
 
 interface StatusPayload {
   sessionId: string;
@@ -48,17 +48,23 @@ function decodeStatus(raw: string | null): StatusPayload | null {
   }
 }
 
-class RealBle implements BleClient {
+function toOutcome(status: StatusPayload): GateOutcome {
+  return { result: status.result, reason: status.reason || "NONE" };
+}
+
+class RealBle {
   private manager = new BleManager();
   /** facilityCode -> connected device, reused across commands. */
   private connected = new Map<string, Device>();
 
-  async scanFacilities(scanSeconds = SCAN_TIMEOUT_MS / 1000): Promise<{ facilityCode: string; deviceName: string }[]> {
+  async scanFacilities(
+    scanSeconds = SCAN_TIMEOUT_MS / 1000
+  ): Promise<{ facilityCode: string; deviceName: string }[]> {
     // Drop stale connections from a previous scan round.
     await this.disconnectAll();
 
     const found = new Map<string, string>(); // facilityCode -> deviceName
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let finished = false;
       const finish = () => {
         if (finished) return;
@@ -71,9 +77,10 @@ class RealBle implements BleClient {
 
       this.manager.startDeviceScan([SERVICE_UUID], { allowDuplicates: false }, (error, device) => {
         if (error) {
-          console.warn("[ble] scan error:", error.message);
           clearTimeout(timeout);
-          finish();
+          this.manager.stopDeviceScan();
+          finished = true;
+          reject(new Error(error.message));
           return;
         }
         const name = device?.localName ?? device?.name;
@@ -91,46 +98,15 @@ class RealBle implements BleClient {
     facilityCode: string,
     sessionId: string,
     intent: "ENTRY" | "EXIT"
-  ): Promise<"OPENED" | "DENIED" | "FAULT"> {
-    const device = await this.ensureConnected(facilityCode);
-
-    const payload = JSON.stringify({ sessionId, intent });
-    const base64 = Buffer.from(payload, "utf8").toString("base64");
-
-    const status = await this.withStatusNotification(device, sessionId, async () => {
-      // discoverAllServicesAndCharacteristics is required before characteristic ops
-      await device.discoverAllServicesAndCharacteristics();
-      await device.writeCharacteristicWithResponseForService(
-        SERVICE_UUID,
-        COMMAND_CHAR_UUID,
-        base64
-      );
-    });
-
-    if (!status) throw new Error("Gate did not respond (timeout)");
-    if (status.result === "OPENED") return "OPENED";
-    if (status.result === "DENIED") return "DENIED";
-    return "FAULT";
+  ): Promise<GateOutcome> {
+    const status = await this.roundTrip(facilityCode, sessionId, intent);
+    return toOutcome(status);
   }
 
-  /** Extra API used by the GateTest screen: explicit close, reports CLOSED. */
-  async sendGateClose(facilityCode: string, sessionId: string): Promise<"CLOSED" | "FAULT"> {
-    const device = await this.ensureConnected(facilityCode);
-
-    const payload = JSON.stringify({ sessionId, intent: "CLOSE" });
-    const base64 = Buffer.from(payload, "utf8").toString("base64");
-
-    const status = await this.withStatusNotification(device, sessionId, async () => {
-      await device.discoverAllServicesAndCharacteristics();
-      await device.writeCharacteristicWithResponseForService(
-        SERVICE_UUID,
-        COMMAND_CHAR_UUID,
-        base64
-      );
-    });
-
-    if (!status) throw new Error("Gate did not respond (timeout)");
-    return status.result === "CLOSED" ? "CLOSED" : "FAULT";
+  /** Test/admin path used by the Gate test screen: explicit immediate close. */
+  async sendGateClose(facilityCode: string, sessionId: string): Promise<GateOutcome> {
+    const status = await this.roundTrip(facilityCode, sessionId, "CLOSE");
+    return toOutcome(status);
   }
 
   async disconnectAll(): Promise<void> {
@@ -148,6 +124,35 @@ class RealBle implements BleClient {
   // private
   // -------------------------------------------------------------------------
 
+  private async roundTrip(
+    facilityCode: string,
+    sessionId: string,
+    intent: "ENTRY" | "EXIT" | "CLOSE"
+  ): Promise<StatusPayload> {
+    const device = await this.ensureConnected(facilityCode);
+    // iOS needs service discovery before it can resolve characteristic UUIDs,
+    // including the notify subscription below.
+    await device.discoverAllServicesAndCharacteristics();
+
+    const payload = JSON.stringify({ sessionId, intent });
+    const base64 = Buffer.from(payload, "utf8").toString("base64");
+
+    const status = await this.withStatusNotification(device, sessionId, async () => {
+      await device.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        COMMAND_CHAR_UUID,
+        base64
+      );
+    });
+
+    if (!status) {
+      throw new Error(
+        `Gate ${facilityCode} did not answer over BLE. Move closer to the gate and check that it is powered.`
+      );
+    }
+    return status;
+  }
+
   private async ensureConnected(facilityCode: string): Promise<Device> {
     const existing = this.connected.get(facilityCode);
     if (existing && (await existing.isConnected())) {
@@ -155,11 +160,9 @@ class RealBle implements BleClient {
     }
     this.connected.delete(facilityCode);
 
-    // Find the device by local name again (scan is fast; the gate is nearby
-    // by construction — the user is standing in front of it).
-    const devices = await this.scanForName(`${NAME_PREFIX}${facilityCode}`, 4000);
+    const devices = await this.scanForName(`${NAME_PREFIX}${facilityCode}`, 5000);
     if (devices.length === 0) {
-      throw new Error(`Gate ${facilityCode} not found — move closer and retry`);
+      throw new Error(`Gate ${facilityCode} not found — move closer and retry.`);
     }
 
     const device = await this.manager.connectToDevice(devices[0].id, { requestMTU: 185 });
@@ -172,7 +175,7 @@ class RealBle implements BleClient {
 
   private scanForName(name: string, timeoutMs: number): Promise<Device[]> {
     const matches: Device[] = [];
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let finished = false;
       const finish = () => {
         if (finished) return;
@@ -185,11 +188,13 @@ class RealBle implements BleClient {
       this.manager.startDeviceScan([SERVICE_UUID], { allowDuplicates: false }, (error, device) => {
         if (error) {
           clearTimeout(timeout);
-          finish();
+          this.manager.stopDeviceScan();
+          finished = true;
+          reject(new Error(error.message));
           return;
         }
-        const dname = device?.localName ?? device?.name;
-        if (dname === name) {
+        const localName = device?.localName ?? device?.name;
+        if (localName === name) {
           matches.push(device!);
           clearTimeout(timeout);
           finish();
@@ -223,17 +228,21 @@ class RealBle implements BleClient {
       timeout = setTimeout(() => done(null), COMMAND_TIMEOUT_MS);
 
       try {
-        sub = device.monitorCharacteristicForService(SERVICE_UUID, STATUS_CHAR_UUID, (error, characteristic) => {
-          if (error || !characteristic) {
-            done(null);
-            return;
+        sub = device.monitorCharacteristicForService(
+          SERVICE_UUID,
+          STATUS_CHAR_UUID,
+          (error, characteristic) => {
+            if (error || !characteristic) {
+              done(null);
+              return;
+            }
+            const status = decodeStatus(characteristic.value);
+            if (status && status.sessionId === sessionId) {
+              done(status);
+            }
+            // Non-matching payloads (e.g. an earlier command's report) are ignored.
           }
-          const status = decodeStatus(characteristic.value);
-          if (status && status.sessionId === sessionId) {
-            done(status);
-          }
-          // Non-matching payloads (e.g. an earlier command's report) are ignored.
-        });
+        );
         // Subscription is live — now perform the write.
         void write().catch((e: Error) => {
           console.warn("[ble] command failed:", e?.message ?? e);
@@ -247,4 +256,4 @@ class RealBle implements BleClient {
   }
 }
 
-export const realBle: RealBle = new RealBle();
+export const realBle = new RealBle();

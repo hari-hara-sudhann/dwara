@@ -1,8 +1,9 @@
 /**
- * Domain types mirroring the Dwara backend (see dwara-architecture-spec.md §5).
+ * Domain types mirroring the Dwara backend (see docs/api-reference.md).
+ * Values are exactly what the Spring Boot controllers serialize — no mocks.
  */
 
-/** Response envelope used by every backend endpoint. */
+/** Envelope used by every app-facing endpoint. */
 export interface ResponseObject<T> {
   success: boolean;
   message: string;
@@ -16,49 +17,74 @@ export type SessionStatus =
   | "EXITED"
   | "ABORTED";
 
+export type VehicleType = "MC" | "LMV" | "HMV";
+
 export interface User {
-  id: string;
+  userId: string;
   name: string;
   email: string;
-  phone: string;
 }
 
+/** `GET /vehicles` returns { userId, vehicles: [...] }. */
 export interface Vehicle {
-  id: string;
-  licensePlate: string;
-  make: string;
-  model: string;
-  color: string;
+  vehicleId: string;
+  numberPlate: string;
+  type: VehicleType;
+}
+
+export interface PricingPolicy {
+  /** INR per second, per vehicle class (spec D14). */
+  mcRate: number;
+  lmvRate: number;
+  hmvRate: number;
 }
 
 export interface ParkingFacility {
-  id: string;
+  facilityId: string;
   facilityCode: string;
   name: string;
   address: string;
-  /** Flat per-second INR rate (decision D14). */
-  ratePerSecond: number;
-  totalSlots: number;
-  availableSlots: number;
+  status: "ACTIVE" | "INACTIVE" | "MAINTENANCE";
+  pricingPolicy: PricingPolicy;
 }
 
 export interface ParkingSession {
-  id: string;
+  sessionId: string;
+  sessionStatus: SessionStatus;
+  facilityCode: string;
+  facilityName: string;
   vehicleId: string;
-  facilityId: string;
-  status: SessionStatus;
-  /** Epoch ms when the vehicle entered; null until PARKED. Backend clock only (D19). */
-  startedAt: number | null;
-  endedAt: number | null;
-  /** Current fee in paise? No — INR as a decimal number. */
-  fee: number;
+  numberPlate: string;
+  /** ISO-8601 instants from the backend clock (D19). */
+  createdAt: string | null;
+  entryAt: string | null;
+  exitAt: string | null;
+  estimatedFee: number;
+  /** Frozen amount after payment; null until then. */
+  totalFee: number | null;
 }
 
-export interface PaymentMethod {
-  id: string;
-  label: string;
-  detail: string;
+export interface SessionPage {
+  sessions: ParkingSession[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+}
+
+export interface PaymentReceipt {
+  paymentId: string;
+  sessionId: string;
+  amount: number;
+  transactionReference: string;
+  paidAt: string;
 }
 
 /** Result of a gate BLE round-trip (firmware status characteristic). */
-export type GateResult = "OPENED" | "DENIED" | "FAULT";
+export type GateResult = "OPENED" | "DENIED" | "FAULT" | "CLOSED";
+
+export interface GateOutcome {
+  result: GateResult;
+  /** Backend or firmware deny reason, e.g. PAYMENT_REQUIRED / ACTUATOR_FAULT. */
+  reason: string;
+}

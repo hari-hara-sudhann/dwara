@@ -32,6 +32,12 @@ public class ParkingSession {
     private Instant entryTimestamp;
     private Instant exitTimestamp;
 
+    // When the backend authorized the EXIT gate. Distinct from exitTimestamp in
+    // practice they are the same instant; the field exists so the grace-window
+    // check (spec §10 #5) is measured from the gate open, never from payment
+    // success. Older rows without it simply never re-open.
+    private Instant exitGateOpenedAt;
+
     @Enumerated(EnumType.STRING)
     private SessionStatus sessionStatus;
 
