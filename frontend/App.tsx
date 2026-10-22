@@ -2,6 +2,7 @@ import "react-native-gesture-handler";
 import "nativewind";
 import "./global.css";
 
+import { View, ActivityIndicator } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
@@ -41,7 +42,17 @@ function Tabs() {
 }
 
 function RootNavigator() {
-  const { user } = useApp();
+  const { user, initializing } = useApp();
+
+  // Hold the splash while the persisted JWT is validated, so a signed-in user
+  // never sees the login screen flash on relaunch.
+  if (initializing) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#F8F9FA" }}>
+        <ActivityIndicator color="#00B177" size="large" />
+      </View>
+    );
+  }
 
   return (
     <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#F8F9FA" } }}>

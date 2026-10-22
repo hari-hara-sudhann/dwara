@@ -1,0 +1,201 @@
+\chapter{Requirements Analysis}
+
+\section{Functional Requirements}
+
+Requirements are grouped by module and numbered for traceability. The final column
+names the evidence that the requirement is met; ``test'' refers to the automated
+suite described in Chapter~\ref{ch:testing}, and ``walkthrough'' to the end-to-end
+demonstration in Section~\ref{sec:walkthrough}.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lXl@{}}
+    \toprule
+    \textbf{ID} & \textbf{Requirement} & \textbf{Verified by} \\
+    \midrule
+    \multicolumn{3}{@{}l}{\textit{Identity}} \\
+    FR1 & Register with name, e-mail and password. The password is stored only as a
+      BCrypt hash; the role is forced to \code{USER}. & test \\
+    FR2 & Log in with e-mail and password and receive a JWT that identifies the
+      account. & test, Postman \\
+    FR3 & Exchange a stored JWT for the caller's profile so a relaunch restores
+      the session. & test, walkthrough \\
+    \multicolumn{3}{@{}l}{\textit{Vehicles and facilities}} \\
+    FR4 & Add, list, update and delete own vehicles, each with a number plate and a
+      class (\code{MC}, \code{LMV}, \code{HMV}). & test \\
+    FR5 & Look up a facility by its code, including per-second rates for all three
+      vehicle classes. & test \\
+    FR6 & Create facilities, change pricing and change status through an
+      administrator key. & test, walkthrough \\
+    \multicolumn{3}{@{}l}{\textit{Sessions and billing}} \\
+    FR7 & Start a session for one of the caller's vehicles at an active facility;
+      the session begins in \code{CREATED} with no timestamps. & test \\
+    FR8 & Refuse a new session when the user already holds one, or when the vehicle
+      already holds one. & test \\
+    FR9 & Read the live fee of a parked session, computed from the backend clock. & test \\
+    FR10 & Pay for a parked session; the amount is frozen and the session moves to
+      \code{PAYMENT\_PENDING}. & test, walkthrough \\
+    FR11 & Cancel a session that has not entered the gate. & test \\
+    FR12 & Abort \code{CREATED} sessions that are never validated at a gate. & test \\
+    FR13 & Page through own session history, newest first, optionally filtered by
+      status. & test \\
+    \multicolumn{3}{@{}l}{\textit{Gate and devices}} \\
+    FR14 & Register gate hardware; return the device secret exactly once and store
+      only its hash. & test \\
+    FR15 & Answer an entry verdict: open only for a \code{CREATED} session at the
+      same facility, and stamp the entry time. & test \\
+    FR16 & Answer an exit verdict: open only for a paid session, and allow one grace
+      re-open after exit. & test \\
+    FR17 & Report every verdict with a machine-readable reason, and deny with a
+      reason rather than an error when the session is unknown. & test \\
+    FR18 & Queue \code{OPEN} or \code{KEEP\_CLOSED} to a gate; the next poll
+      consumes the command exactly once. & test \\
+    \multicolumn{3}{@{}l}{\textit{Application}} \\
+    FR19 & Discover a gate by BLE advertisement, list nearby facilities and fetch
+      their details. & walkthrough \\
+    FR20 & Send entry and exit commands over BLE with the session identifier and
+      display the gate's answer, including denial reasons. & walkthrough \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Functional requirements and their verification evidence.}
+  \label{tab:functional}
+\end{table}
+
+\section{Non-Functional Requirements}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Attribute} & \textbf{Requirement and how it is satisfied} \\
+    \midrule
+    Security & Three credentials with separate scopes: JWT for users, a static
+      header for administration, a per-device bearer secret for hardware. Passwords
+      and device secrets are stored as hashes; the gate decision is always
+      server-side. \\
+    Safety & The gate fails closed. An unreachable backend, a malformed answer or
+      an actuator fault never opens the gate; a latched fault requires a reset. \\
+    Consistency & State changes are transactional. Session creation is serialised
+      on the user row, payment on the session row. \\
+    Reliability & Health-checked dependencies in Compose; the test runner waits for
+      PostgreSQL and the backend before starting. Stale sessions are reaped so a
+      crash cannot block an account indefinitely. \\
+    Maintainability & Layered packages (controller, service, repository), DTOs at
+      the boundary, constructor injection, no business logic in controllers. \\
+    Testability & Every replaceable dependency is an interface
+      (\code{PaymentService}, \code{GateControllerClient}, \code{AuthService},
+      \code{GateActuator}). 118 automated tests and a coverage gate. \\
+    Portability & Backend and tests run in containers; firmware is one Arduino
+      sketch with a single configuration header. \\
+    Usability & No facility code or location entry: the gate is chosen from a scan.
+      Refusals are shown as the backend's own message. \\
+    Observability & Public health endpoint, structured gate log lines, JUnit XML
+      and JaCoCo reports produced by every run. \\
+    Performance & Gate validation is a database read plus a state write; the
+      application allows 15\,s for a full BLE round trip including the servo sweep
+      and the 8\,s hold. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Non-functional requirements.}
+  \label{tab:nfr}
+\end{table}
+
+\section{Software Requirements Specification Summary}
+
+The full specification is maintained in the repository
+(\code{dwara-architecture-spec.md}); Table~\ref{tab:srs} is the summary that binds
+this report.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Item} & \textbf{Specification} \\
+    \midrule
+    Purpose & Phone-controlled parking gate with backend-authorised entry and exit
+      and per-second billing. \\
+    Product scope & Three deliverables in one repository: Spring Boot backend,
+      Expo/React Native application, ESP32 Arduino firmware. \\
+    Actors & Driver, attendant/operator, gate controller, scheduled sweep. \\
+    External interfaces & REST/JSON over HTTP for the application and the
+      administrator; REST/JSON over Wi-Fi for the gate; BLE GATT for the phone; JDBC
+      to PostgreSQL. \\
+    Data & Users, vehicles, facilities with JSON pricing, sessions, payments, gate
+      controllers and commands. All keys are UUIDs; all money is decimal. \\
+    Assumptions & One gate per facility; the driver's phone is BLE-capable and runs
+      the application in the foreground; the facility has Wi-Fi for the gate. \\
+    Constraints & Backend clock is the only billing clock; fixed-timer gate close;
+      plaintext BLE in version one; mock payment provider. \\
+    Acceptance & Every functional requirement passes its listed evidence; the
+      automated suite is green with a 100\% service-layer line-coverage gate; the
+      mobile build type-checks; the firmware compiles for ESP32. \\
+    Out of scope & Real payments, refunds, occupancy sensing, multiple gates, roles
+      beyond \code{USER}, OTA updates, background BLE. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Software requirements specification summary.}
+  \label{tab:srs}
+\end{table}
+
+\subsection*{Requirement prioritisation}
+
+All requirements in Table~\ref{tab:functional} were delivered. Had the schedule
+slipped, the release order would have been: identity (FR1--FR3), session creation
+and the anti-abuse rule (FR7--FR8), gate verdicts and payment (FR10, FR15--FR16),
+then history and remote commands. The payment flow and the exit verdict are
+inseparable, because a gate that cannot check payment cannot be shipped; history and
+administration are the only genuinely optional surfaces.
+
+\section{Hardware and Software Requirements}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Category} & \textbf{Requirement} \\
+    \midrule
+    Development host & Docker Engine 24 or later with Compose v2 and \code{bash}.
+      No host JDK or Maven is required for the container path (JDK 21 and the Maven
+      wrapper are needed only for host-side builds). \\
+    Backend runtime & Java 21, Spring Boot 4.1, Spring Security, Spring Data JPA,
+      JJWT, Actuator; PostgreSQL 16. \\
+    Mobile toolchain & Node.js with npm, Expo 57, React Native 0.86, TypeScript,
+      \code{react-native-ble-plx}; a development build on a physical phone for BLE. \\
+    Firmware toolchain & \code{arduino-cli} with the ESP32 core, ArduinoJson 7 and
+      ESP32Servo; Huge APP partition scheme for the Wi-Fi and BLE build. \\
+    Demo tooling & Python 3 with a virtual environment for the serial bridge;
+      Postman or Newman for the API contract collection. \\
+    Network & Phone and backend on the same LAN, backend port reachable; the gate
+      needs Wi-Fi for production validation. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Software requirements.}
+  \label{tab:software-req}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}llX@{}}
+    \toprule
+    \textbf{Part} & \textbf{Quantity} & \textbf{Purpose / note} \\
+    \midrule
+    ESP32 20-pin development board & 1 & BLE peripheral and Wi-Fi station; 3.3\,V
+      logic. \\
+    MG90S micro servo & 1 & Gate arm actuator; metal gears, 4.8--6\,V. \\
+    External 5\,V supply, at least 1\,A & 1 & Servo power; never the ESP32 3.3\,V
+      rail. \\
+    Electrolytic capacitor, 470--1000\,\(\mu\)F & 1 & Across the servo supply, close
+      to the servo, to absorb stall transients. \\
+    Gate arm and hinge & 1 & Light arm; push-through override recommended. \\
+    Jumper wires, breadboard, USB cable & --- & Wiring, flashing and serial
+      monitor. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Gate hardware bill of materials.}
+  \label{tab:bom}
+\end{table}

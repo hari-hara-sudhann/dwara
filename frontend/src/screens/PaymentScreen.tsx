@@ -3,45 +3,53 @@ import { View, Text, Pressable, ScrollView, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen, Card, SectionTitle, PrimaryButton } from "../components/ui";
 import { useApp, formatFee } from "../context/AppContext";
-import { api } from "../services/mockApi";
-import type { PaymentMethod } from "../types";
+import { api } from "../services/api";
 import type { StackScreenProps } from "../navigation/types";
 
-/** Flat per-second INR rate shown for context (D14). */
-const RATE_PER_SECOND = 0.05;
+interface PaymentMethod {
+  id: string;
+  label: string;
+  detail: string;
+}
+
+/** The backend payment gateway is mocked (spec D10); these are UI choices only. */
+const METHODS: PaymentMethod[] = [
+  { id: "upi", label: "UPI", detail: "Mock gateway" },
+  { id: "card", label: "Card", detail: "Mock gateway" },
+];
 
 export function PaymentScreen({ route, navigation }: StackScreenProps<"Payment">) {
   const sessionId = route.params.sessionId;
+  const { refreshActiveSession } = useApp();
   const [fee, setFee] = useState<number | null>(null);
-  const [method, setMethod] = useState<PaymentMethod | null>(null);
+  const [method, setMethod] = useState<PaymentMethod | null>(METHODS[0] ?? null);
   const [paying, setPaying] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
-      const res = await api.getSessionFee(sessionId);
-      if (!cancelled && res.success) setFee(res.data.fee);
+      const res = await api.getFee(sessionId);
+      if (!cancelled && res.success) setFee(Number(res.data));
     };
     void tick();
-    const t = setInterval(tick, 1000);
+    const timer = setInterval(tick, 2000);
     return () => {
       cancelled = true;
-      clearInterval(t);
+      clearInterval(timer);
     };
   }, [sessionId]);
 
-  const methods: PaymentMethod[] = api.listMethods();
-
   const pay = async () => {
-    if (!method) return;
+    if (!method || paying) return;
     setPaying(true);
-    const res = await api.paySession(sessionId, method.id);
+    const res = await api.pay(sessionId);
     setPaying(false);
     if (!res.success) {
       Alert.alert("Payment failed", res.message);
       return;
     }
-    // Mock gateway settled. Session is now PAYMENT_PENDING — exit gate next.
+    // The backend froze the fee and moved the session to PAYMENT_PENDING.
+    await refreshActiveSession();
     navigation.navigate("ActiveSession", { sessionId });
   };
 
@@ -56,12 +64,12 @@ export function PaymentScreen({ route, navigation }: StackScreenProps<"Payment">
             <Text className="text-primary text-2xl font-bold tracking-tight">
               {fee === null ? "—" : formatFee(fee)}
             </Text>
-            <Text className="text-muted text-sm mt-1">₹{(RATE_PER_SECOND * 3600).toFixed(0)}/hr · charged per second</Text>
+            <Text className="text-muted text-sm mt-1">Charged per second · mock gateway</Text>
           </View>
         </Card>
 
         <SectionTitle title="Pay with" />
-        {methods.map((m) => {
+        {METHODS.map((m) => {
           const selected = method?.id === m.id;
           return (
             <Pressable key={m.id} onPress={() => setMethod(m)}>

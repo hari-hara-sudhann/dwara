@@ -7,10 +7,12 @@ import { realBle } from "../services/realBle";
 type Phase = "idle" | "scanning" | "opening" | "closing";
 
 /**
- * Standalone gate test screen (pre-backend build): scans for the ESP32
- * advertising as DWARA-<facilityCode> and drives OPEN / CLOSE straight over
- * BLE. Authorization is permissive on the firmware side, so no session or
- * payment state is required.
+ * Bench/diagnostic screen: scans for the ESP32 advertising as
+ * DWARA-<facilityCode> and drives OPEN / CLOSE straight over BLE.
+ *
+ * The firmware still validates ENTRY/EXIT against the backend, so a synthetic
+ * session id is refused with `UNKNOWN_SESSION` unless the device is flashed
+ * with DWARA_REMOTE_AUTH=0 (permissive bench build). CLOSE is local-only.
  */
 export function GateTestScreen() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -51,15 +53,14 @@ export function GateTestScreen() {
     setPhase(intent === "CLOSE" ? "closing" : "opening");
     appendLog(`Sending ${intent}…`);
     try {
-      // Test build: any sessionId works (PermissiveAuthService on the ESP32).
       const sessionId = `test-${Date.now()}`;
-      const result =
+      const outcome =
         intent === "CLOSE"
           ? await realBle.sendGateClose(facilityCode, sessionId)
           : await realBle.sendGateCommand(facilityCode, sessionId, intent);
-      appendLog(`Result: ${result}`);
-      if (result === "FAULT") {
-        Alert.alert("Gate fault", "The ESP32 reported a fault. Check serial logs.");
+      appendLog(`Result: ${outcome.result} (${outcome.reason})`);
+      if (outcome.result === "FAULT") {
+        Alert.alert("Gate fault", "The ESP32 reported an actuator fault. Check serial logs.");
       }
     } catch (e) {
       appendLog(`Error: ${(e as Error).message}`);
@@ -76,7 +77,7 @@ export function GateTestScreen() {
       <Screen>
         <SectionTitle
           title="Gate test"
-          subtitle="Scan for the ESP32 gate and drive the servo directly over BLE. No backend involved."
+          subtitle="Scan for the ESP32 gate and drive the servo directly over BLE."
         />
 
         <Card>

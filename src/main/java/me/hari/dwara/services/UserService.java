@@ -14,6 +14,8 @@ import me.hari.dwara.utilities.JwtService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.util.UUID;
+
 
 @Service
 @RequiredArgsConstructor
@@ -28,7 +30,9 @@ public class UserService {
         }
 
         User newUser = new User();
-        newUser.setName(dto.getEmail());
+        newUser.setName(dto.getName() != null && !dto.getName().isBlank()
+                ? dto.getName()
+                : dto.getEmail());
         newUser.setEmail(dto.getEmail());
 
         String passwordHash = passwordEncoder.encode(dto.getRawPassword());
@@ -52,6 +56,18 @@ public class UserService {
         LoginResponseDto res = new LoginResponseDto(jwt);
 
         return ResponseObject.success( "Login successful.", res);
+    }
+
+    /**
+     * Identity behind a JWT — used by {@code GET /auth/me} so the app can
+     * restore its session after a relaunch (the JWT only carries the user id).
+     */
+    public ResponseObject<RegisrationSuccessDto> findUser(UUID userId) {
+        User user = userRepository.findById(userId).orElse(null);
+        if (user == null) {
+            return ResponseObject.failure("User does not exist.");
+        }
+        return ResponseObject.success("User found.", UserMapper.toRegistrationSuccessDto(user));
     }
 
     private boolean verify(String raw, String hashed) {

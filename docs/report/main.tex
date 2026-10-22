@@ -1,0 +1,207 @@
+\documentclass[12pt,a4paper]{report}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{url}
+
+% Typeset the percent sign in a URL as an ordinary character so that
+% percent-escaped sequences such as %20 are not split across lines
+% and are not surrounded by binary-operator spacing.
+\makeatletter
+\gdef\Url@percent{\mathord{\mathchar`\%}}
+\makeatother
+
+\usepackage{newtxtext}
+\usepackage{newtxmath}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage[hidelinks]{hyperref}
+
+% ---------------------------------------------------------------------------
+% Image registry: every figure path lives in images.tex and nowhere else.
+% ---------------------------------------------------------------------------
+\input{images}
+
+% ---------------------------------------------------------------------------
+% Code listing palette
+% ---------------------------------------------------------------------------
+\definecolor{codebackground}{HTML}{F8F9FC}
+\definecolor{codekeyword}{HTML}{287D78}
+\definecolor{codecomment}{HTML}{858B98}
+\definecolor{codestring}{HTML}{8870A8}
+\definecolor{codenumber}{HTML}{A0A5B0}
+\definecolor{coderule}{HTML}{E1E5EE}
+
+\lstdefinestyle{codestyle}{
+    backgroundcolor=\color{codebackground},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codekeyword}\bfseries,
+    commentstyle=\color{codecomment}\itshape,
+    stringstyle=\color{codestring},
+    numberstyle=\tiny\color{codenumber},
+    numbers=left,
+    numbersep=8pt,
+    frame=single,
+    rulecolor=\color{coderule},
+    frameround=tttt,
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false,
+    keepspaces=true,
+    tabsize=4,
+    captionpos=b,
+    columns=fullflexible
+}
+
+% listings has no built-in JavaScript/TypeScript grammar; this minimal one is
+% enough for the short excerpts and keeps the build dependency-free.
+\lstdefinelanguage{JavaScript}{
+    keywords={async,await,break,case,catch,class,const,continue,default,delete,do,
+      else,export,extends,false,finally,for,from,function,if,import,in,instanceof,
+      let,new,null,of,return,super,switch,this,throw,true,try,typeof,undefined,var,
+      void,while,yield},
+    sensitive=true,
+    comment=[l]{//},
+    morecomment=[s]{/*}{*/},
+    morestring=[b]',
+    morestring=[b]",
+    morestring=[b]`,
+}
+\lstdefinestyle{java}{style=codestyle,language=Java}
+\lstdefinestyle{typescript}{style=codestyle,language=JavaScript}
+\lstdefinestyle{xml}{style=codestyle,language=XML}
+\lstdefinestyle{bash}{style=codestyle,language=bash}
+\lstdefinestyle{yaml}{style=codestyle,language=Java}
+\lstdefinestyle{cpp}{style=codestyle,language=C++}
+\lstdefinestyle{plain}{style=codestyle}
+
+% ---------------------------------------------------------------------------
+% Chapter heading format (matches the reference template)
+% ---------------------------------------------------------------------------
+\titleformat{\chapter}[block]
+  {\normalfont\Large\bfseries\centering}
+  {\thechapter.}
+  {0.5em}
+  {}
+
+% Long identifiers in \texttt cannot hyphenate, so give the line breaker some
+% slack instead of letting it overflow the margin.
+\setlength{\emergencystretch}{3em}
+
+% This report has many wide tables. Let floats pack onto a page instead of
+% drifting several pages away from the text that introduces them.
+\setcounter{topnumber}{4}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{5}
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\bottomfraction}{0.7}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.8}
+
+% Small helpers used throughout the chapters.
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\project}{\textsc{Dwara}}
+\newcommand{\inr}{INR}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+% Title page
+% ---------------------------------------------------------------------------
+\begin{titlepage}
+\centering
+\thispagestyle{empty}
+
+\reportlogo{\ImgLogo}
+
+\vfill
+
+{\Large\bfseries
+A SMARTPHONE-CENTRIC, \\
+LOW-INFRASTRUCTURE \\ IOT PARKING
+MANAGEMENT SYSTEM.
+\par}
+
+\vspace{0.6cm}
+
+{\large\itshape
+BLE discovery, backend-authorised entry and exit, \\
+and a servo gate built from one ESP32
+\par}
+
+\vfill
+
+{\itshape
+Project report submitted \\ in partial fulfillment of \\
+the requirements of the course
+\par}
+
+\vspace{0.5cm}
+
+{\large\bfseries
+SOFTWARE ENGINEERING PROJECT
+\par}
+
+\vfill
+
+{\itshape Submitted by\par}
+
+\vspace{0.4cm}
+
+{\bfseries
+Hari Hara Sudhan \\
+24BAI1091\\[4pt]
+\par}
+
+\vfill
+
+{\itshape Under the guidance of\par}
+
+\vspace{0.4cm}
+
+{\bfseries
+Dr.\ Elakya R\\
+School of Computer Science and Engineering (SCOPE)
+\par}
+
+\vfill
+
+{\bfseries
+Fall Semester 2026--27
+\par}
+
+\end{titlepage}
+
+% ---------------------------------------------------------------------------
+% Front matter
+% ---------------------------------------------------------------------------
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+
+\pagenumbering{arabic}
+
+% ---------------------------------------------------------------------------
+% Main matter: nine chapters, conclusion, references
+% ---------------------------------------------------------------------------
+\include{introduction}
+\include{literature}
+\include{process}
+\include{requirements}
+\include{design}
+\include{implementation}
+\include{tools}
+\include{testing}
+\include{results}
+\include{conclusion}
+\include{references}
+
+\end{document}

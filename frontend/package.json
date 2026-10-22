@@ -17,6 +17,7 @@
     "@sfourdrinier/react-native-ble-plx": "^3.9.3",
     "buffer": "^6.0.3",
     "expo": "^57.0.27",
+    "expo-build-properties": "~57.0.22",
     "expo-font": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "nativewind": "^4.2.7",

@@ -2,6 +2,7 @@ package me.hari.dwara.services;
 
 import me.hari.dwara.configs.SessionProperties;
 import me.hari.dwara.dtos.parkingsession.SessionDto;
+import me.hari.dwara.dtos.parkingsession.SessionPageDto;
 import me.hari.dwara.entities.ParkingFacility;
 import me.hari.dwara.entities.ParkingSession;
 import me.hari.dwara.entities.Payment;
@@ -14,7 +15,11 @@ import me.hari.dwara.mappers.SessionMapper;
 import me.hari.dwara.repositories.ParkingFacilityRepository;
 import me.hari.dwara.repositories.UserRepository;
 import me.hari.dwara.repositories.VehicleRepository;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import lombok.RequiredArgsConstructor;
 import me.hari.dwara.dtos.ResponseObject;
@@ -40,15 +45,11 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ParkingSessionService {
 
-    /**
-     * Spec D9 / §10 #2: statuses that hold the single-session slot. {@code EXITED}
-     * and {@code ABORTED} are terminal, so they free the user and the vehicle up.
-     */
-    private static final List<SessionStatus> ACTIVE_STATUSES = List.of(
-            SessionStatus.CREATED,
-            SessionStatus.PARKED,
-            SessionStatus.PAYMENT_PENDING
-    );
+    /** Spec D9 / §10 #2: statuses that hold the single-session slot. */
+    private static final List<SessionStatus> ACTIVE_STATUSES = SessionStatus.ACTIVE;
+
+    /** Upper bound on the history page size, so a client cannot ask for a full dump. */
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final ParkingSessionRepository sessionRepository;
     private final UserRepository userRepository;
@@ -58,8 +59,16 @@ public class ParkingSessionService {
     private final PaymentService paymentService;
     private final SessionProperties sessionProperties;
 
+    /**
+     * Spec D9: one active session per user AND per vehicle.
+     *
+     * <p>The checks are read-then-write, so the user row is locked for the
+     * duration of the transaction — two concurrent POSTs for the same account
+     * serialize and the second one sees the first session.
+     */
+    @Transactional
     public ResponseObject<UUID> createSession(SessionCreationRequestDto dto) {
-        User user = userRepository.findById(dto.userId()).orElse(null);
+        User user = userRepository.findByIdForUpdate(dto.userId()).orElse(null);
         if (user == null)
             return ResponseObject.failure("User does not exist.");
 
@@ -95,6 +104,13 @@ public class ParkingSessionService {
         return ResponseObject.success("Session successfully created", session.getSessionId());
     }
 
+    /**
+     * Legacy pre-gate check-in. Superseded by {@code POST /gate/validate}
+     * (ENTRY), which is the only path that stamps the entry timestamp now.
+     *
+     * @deprecated use {@code GateControllerService#openEntryGate}.
+     */
+    @Deprecated(forRemoval = true)
     public ResponseObject<Void> checkIn(UUID sessionId) {
         ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session == null)
@@ -112,9 +128,22 @@ public class ParkingSessionService {
      * once the gate has authorized an entry the fee clock is running.
      */
     public ResponseObject<Void> cancel(UUID sessionId) {
+        return cancel(sessionId, null);
+    }
+
+    /**
+     * Owner-scoped cancellation used by {@code POST /sessions/{id}/cancel}.
+     *
+     * @param userId the authenticated user; when non-null the session must
+     *               belong to them.
+     */
+    public ResponseObject<Void> cancel(UUID sessionId, UUID userId) {
         ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session == null)
             return ResponseObject.failure("Parking session does not exist.");
+
+        if (userId != null && !isOwnedBy(session, userId))
+            return ResponseObject.failure("Parking session does not belong to the user.");
 
         if (session.getSessionStatus() != SessionStatus.CREATED)
             return ResponseObject.failure("Only a created session can be cancelled.");
@@ -124,17 +153,27 @@ public class ParkingSessionService {
         return ResponseObject.success("Session cancelled.", null);
     }
 
+    /** Convenience overload for callers without a user context (tests/jobs). */
+    public ResponseObject<PaymentReceiptDto> pay(UUID sessionId) {
+        return pay(sessionId, null);
+    }
+
     /**
      * Spec §3.5 / D10: settle the fee and hand the session over to the exit gate.
      *
-     * <p>The fee is frozen here (D-answer "fee freeze at payment success") and the
-     * session moves to {@code PAYMENT_PENDING}, which is the only state the exit
-     * gate will open for.
+     * <p>The fee is frozen here and the session moves to {@code PAYMENT_PENDING},
+     * which is the only state the exit gate will open for. The session row is
+     * locked so a double-tap (or a client retry after a timeout) cannot charge
+     * twice: the second transaction sees {@code PAYMENT_PENDING} and is refused.
      */
-    public ResponseObject<PaymentReceiptDto> pay(UUID sessionId) {
-        ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
+    @Transactional
+    public ResponseObject<PaymentReceiptDto> pay(UUID sessionId, UUID userId) {
+        ParkingSession session = sessionRepository.findByIdForUpdate(sessionId).orElse(null);
         if (session == null)
             return ResponseObject.failure("Parking session does not exist.");
+
+        if (userId != null && !isOwnedBy(session, userId))
+            return ResponseObject.failure("Parking session does not belong to the user.");
 
         // CREATED means the car never went in (nothing to bill); PAYMENT_PENDING
         // and EXITED mean it is already settled.
@@ -152,7 +191,6 @@ public class ParkingSessionService {
         Instant paidAt = Instant.now();
 
         session.setTotalFee(fee);
-        session.setExitTimestamp(paidAt);
         session.setSessionStatus(SessionStatus.PAYMENT_PENDING);
         sessionRepository.save(session);
 
@@ -192,7 +230,9 @@ public class ParkingSessionService {
     }
 
     public ResponseObject<SessionDto> getActiveSession(UUID userId) {
-        ParkingSession session = sessionRepository.findActiveSessionByUserId(userId).orElse(null);
+        ParkingSession session = sessionRepository
+                .findFirstByUser_UserIdAndSessionStatusInOrderByCreatedAtDesc(userId, ACTIVE_STATUSES)
+                .orElse(null);
         if (session == null)
             return ResponseObject.failure("No active session found");
 
@@ -201,10 +241,72 @@ public class ParkingSessionService {
         return ResponseObject.success("Active session found.", dto);
     }
 
+    /**
+     * Spec §5 addition: the user's session history, newest first.
+     *
+     * <p>Without a {@code status} filter every status is returned (which is
+     * what the Activity screen shows); the page/size parameters are clamped so
+     * a client cannot request an unbounded dump.
+     */
+    @Transactional(readOnly = true)
+    public ResponseObject<SessionPageDto> listSessions(UUID userId,
+                                                       SessionStatus status,
+                                                       int page,
+                                                       int size) {
+        int safePage = Math.max(page, 0);
+        int safeSize = Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
+
+        List<SessionStatus> statuses = status == null
+                ? List.of(SessionStatus.values())
+                : List.of(status);
+
+        Page<ParkingSession> result = sessionRepository
+                .findByUser_UserIdAndSessionStatusIn(
+                        userId,
+                        statuses,
+                        PageRequest.of(safePage, safeSize, Sort.by(Sort.Direction.DESC, "createdAt")));
+
+        List<SessionDto> sessions = result.getContent().stream()
+                .map(SessionMapper::toDto)
+                .toList();
+
+        return ResponseObject.success(
+                "Session history found.",
+                new SessionPageDto(
+                        sessions,
+                        result.getNumber(),
+                        result.getSize(),
+                        result.getTotalElements(),
+                        result.getTotalPages()));
+    }
+
     public ResponseObject<BigDecimal> getParkingFee(UUID sessionId) {
+        return getParkingFee(sessionId, null);
+    }
+
+    /**
+     * Owner-scoped live fee used by {@code GET /sessions/{id}/fee}.
+     *
+     * @param userId the authenticated user; when non-null the session must
+     *               belong to them.
+     */
+    public ResponseObject<BigDecimal> getParkingFee(UUID sessionId, UUID userId) {
         ParkingSession session = sessionRepository.findById(sessionId).orElse(null);
         if (session == null)
             return ResponseObject.failure("Session does not exist.");
+
+        if (userId != null && !isOwnedBy(session, userId))
+            return ResponseObject.failure("Session does not belong to the user.");
+
+        // Once paid the fee is frozen (D14), even if the key is still in the
+        // parking lot waiting for the exit gate.
+        if (session.getTotalFee() != null)
+            return ResponseObject.success("Final fee", session.getTotalFee());
+
+        // The billing clock starts at gate authorization (D3/D19): a CREATED
+        // session has nothing to accrue yet.
+        if (session.getEntryTimestamp() == null)
+            return ResponseObject.failure("Session has not been parked yet.");
 
         Duration duration = Duration.between(session.getEntryTimestamp(), Instant.now());
 
@@ -217,6 +319,12 @@ public class ParkingSessionService {
 
         BigDecimal fee = rate.multiply(seconds);
         return ResponseObject.success("Current fee", fee);
+    }
+
+    /** A session is only addressable by the user who started it. */
+    private static boolean isOwnedBy(ParkingSession session, UUID userId) {
+        return session.getUser() != null
+                && userId.equals(session.getUser().getUserId());
     }
 
     /**

@@ -1,0 +1,80 @@
+\chapter{Conclusion and Future Enhancements}
+
+\section{Conclusion}
+
+\project{} set out to remove the dedicated identity hardware from a parking gate and
+replace it with a phone that the driver already owns. The delivered system does that
+without weakening the access decision: the phone carries a session identifier, the
+gate asks the backend, and the backend alone decides. Entry starts the billing clock,
+payment freezes the amount, and the exit verdict checks the payment rather than the
+clock. A camera, an RFID reader, a ticket dispenser and a vehicle sensor are all
+absent, and the entire site is one ESP32 and one servo.
+
+The work produced four artefacts that can be evaluated separately. The backend is a
+layered Spring Boot application with three credential schemes, a transactional
+session lifecycle, per-second billing and a device-command queue. The mobile
+application is a typed Expo client that owns no business rules and displays the
+backend's own messages. The firmware is an Arduino sketch whose transports and
+actuator sit behind interfaces, so the same gate logic runs over Wi-Fi, over a serial
+demonstration bridge, or against an LED stand-in. The verification workflow is a
+Compose profile that boots the real image as a readiness gate, runs 118 tests under a
+100\% service-line coverage gate, and publishes JUnit and JaCoCo reports even when the
+run fails.
+
+Three conclusions are worth carrying forward. First, \emph{the correct place for the
+access decision is the server}, and moving it there makes the edge dramatically
+simpler rather than more complex. Second, \emph{duration and payment are the only
+inputs the exit gate needs}; once that is true, a single gate can serve both
+directions and the facility needs no second mechanism. Third, \emph{reproducible
+verification is a feature}: the container workflow turned every later change into a
+checkable one and made the coverage figure a constraint rather than a report.
+
+The system is complete for its stated scope. What remains is not unfinished work but
+the next layer of hardening: real payments, transport security, richer gate hardware
+and the operational surfaces that a commercial deployment would require.
+
+\section{Future Enhancements}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lXl@{}}
+    \toprule
+    \textbf{Enhancement} & \textbf{Description and why it matters} & \textbf{Priority} \\
+    \midrule
+    Real payment gateway & Replace the mock provider with an implementation of
+      \code{PaymentService} that supports authorisation, failure and refunds. The
+      session lifecycle already models the states a gateway needs. & High \\
+    Transport security & Serve the API over TLS and move the gate to HTTPS; consider
+      BLE pairing with an authenticated session token instead of a plaintext
+      identifier. & High \\
+    Hardware validation & Execute and record the servo, watchdog and BLE bench
+      procedures on a physical gate, and add an automated end-to-end test with a
+      development board on the bench. & High \\
+    Escalating enforcement & Add sensors, a beam or a loop detector so the gate can
+      detect a tailgating vehicle and refuse to close on an obstruction. & Medium \\
+    Multiple gates and lanes & Generalise the device model to entry and exit gates
+      per facility and to more than one servo, with a lane identifier in the
+      verdict. & Medium \\
+    Operator console & A small web surface for facilities, pricing, device rotation
+      and live gate state, replacing curl-style administration. & Medium \\
+    Device secret rotation & A rotation endpoint that returns a new secret once,
+      invalidates the old hash immediately and records the event. & Medium \\
+    Over-the-air updates & Signed firmware updates for the gate, with rollback, so a
+      provisioned site does not need physical access to change behaviour. & Low \\
+    Occupancy and analytics & Optional bay sensors or camera counts to expose
+      utilisation and revenue trends without making access depend on them. & Low \\
+    Background BLE and wallet cards & iOS background operation and a fallback NFC or
+      card credential for drivers without the application. & Low \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Enhancement roadmap, ordered by the risk each item removes.}
+  \label{tab:future}
+\end{table}
+
+The ordering follows one rule: remove the assumptions that would be unacceptable in
+production before adding capability. A real payment provider and transport security
+address the two places where the current system is explicitly a prototype. Hardware
+validation converts documented procedures into measured evidence. Everything else
+expands the product; none of it changes the architecture, because the decision that
+matters is already in the right place.

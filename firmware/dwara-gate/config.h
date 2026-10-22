@@ -18,30 +18,59 @@
 // Device identity (spec D7 — flash-time config)
 // ---------------------------------------------------------------------------
 
+// Per-device values (device id + secret, WiFi credentials, backend URL) live
+// in secrets.h next to this file. secrets.h is gitignored so a real secret
+// never lands in the repository: copy it to a new checkout instead of editing
+// the defaults below. Without secrets.h the placeholders apply, and — because
+// the backend only serves registered devices (spec D6) — every call fails
+// closed with HTTP 401 "Invalid device credentials".
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+
+#ifndef DWARA_FACILITY_CODE
+#define DWARA_FACILITY_CODE "FAC-0001"
+#endif
+#ifndef DWARA_DEVICE_ID
+#define DWARA_DEVICE_ID "00000000-0000-0000-0000-000000000000"
+#endif
+#ifndef DWARA_DEVICE_SECRET
+#define DWARA_DEVICE_SECRET "replace-me-device-secret"
+#endif
+#ifndef DWARA_WIFI_SSID
+#define DWARA_WIFI_SSID "replace-me-ssid"
+#endif
+#ifndef DWARA_WIFI_PASSWORD
+#define DWARA_WIFI_PASSWORD "replace-me-password"
+#endif
+#ifndef DWARA_BACKEND_BASE_URL
+#define DWARA_BACKEND_BASE_URL "http://192.168.1.2:8080"
+#endif
+
 // The parking facility this gate belongs to. Also broadcast in the BLE
 // advertisement name as "DWARA-<facilityCode>" (spec D1, discovery via BLE
 // beacon).
-static const char *FACILITY_CODE = "FAC-0001";
+static const char *FACILITY_CODE = DWARA_FACILITY_CODE;
 
 // Registered device id (backend POST /devices, static admin key). Must match
 // the row in the gate_controller table for /gate/validate and
 // /devices/{id}/commands.
-static const char *DEVICE_ID = "00000000-0000-0000-0000-000000000000";
+static const char *DEVICE_ID = DWARA_DEVICE_ID;
 
 // Per-device secret (spec D6/D11). Hashed server-side; the plaintext lives
 // ONLY here. Sent as "Authorization: Bearer <deviceSecret>" on backend calls.
-static const char *DEVICE_SECRET = "replace-me-device-secret";
+static const char *DEVICE_SECRET = DWARA_DEVICE_SECRET;
 
 // ---------------------------------------------------------------------------
 // WiFi (station mode, spec D5/D11)
 // ---------------------------------------------------------------------------
 
-static const char *WIFI_SSID = "replace-me-ssid";
-static const char *WIFI_PASSWORD = "replace-me-password";
+static const char *WIFI_SSID = DWARA_WIFI_SSID;
+static const char *WIFI_PASSWORD = DWARA_WIFI_PASSWORD;
 
 // Backend base URL, no trailing slash. Use http:// during bring-up; switch to
 // https:// with a verified CA before any real deployment.
-static const char *BACKEND_BASE_URL = "http://192.168.1.100:8080";
+static const char *BACKEND_BASE_URL = DWARA_BACKEND_BASE_URL;
 
 // How long WiFi association may take before a request is failed closed.
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 10000;
@@ -128,8 +157,14 @@ static const uint32_t SERVO_SETTLE_MS = 800;
 static const uint32_t GATE_OPEN_HOLD_MS = 8000;  // 8 s
 
 // Safety bound for the actuator to reach its commanded position. If it has
-// not settled by then, treat it as a fault (spec §10, edge case 12).
+// not settled by then, treat it as a fault (spec §10, edge case 12): the servo
+// is driven back to CLOSED and the PWM signal is released.
 static const uint32_t ACTUATOR_SETTLE_TIMEOUT_MS = 3000;
+
+// Bench-only fault injection. Set to 1 to make the settle window never
+// complete, so the watchdog above fires (VERIFY the FAULT path; the gate then
+// stays latched closed until a reset). Leave 0 in normal builds.
+#define DWARA_FORCE_ACTUATOR_FAULT 0
 
 // ---------------------------------------------------------------------------
 // Backend client (spec §3.3/§3.5 — ESP32 is the validation authority)

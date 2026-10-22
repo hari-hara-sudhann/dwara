@@ -2,29 +2,40 @@ import { useState } from "react";
 import { View, Text, Pressable, ScrollView, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Screen, Card, PrimaryButton, SectionTitle } from "../components/ui";
-import { ble } from "../services/mockBle";
-import { api } from "../services/mockApi";
+import { realBle } from "../services/realBle";
+import { api } from "../services/api";
+import { hourlyRate } from "../context/AppContext";
 import type { ParkingFacility } from "../types";
 import type { TabScreenProps } from "../navigation/types";
 
+type ScanState = "idle" | "scanning" | "done" | "error";
+
 export function DiscoverScreen({ navigation }: TabScreenProps<"Discover">) {
-  const [scanning, setScanning] = useState(false);
+  const [state, setState] = useState<ScanState>("idle");
   const [facilities, setFacilities] = useState<ParkingFacility[]>([]);
-  const [scanned, setScanned] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const scan = async () => {
-    setScanning(true);
+    setState("scanning");
     setFacilities([]);
-    const beacons = await ble.scanFacilities();
-    const resolved: ParkingFacility[] = [];
-    for (const b of beacons) {
-      const res = await api.getFacility(b.facilityCode);
-      if (res.success) resolved.push(res.data);
+    setError(null);
+    try {
+      // Real BLE discovery: gates advertise as DWARA-<facilityCode>.
+      const beacons = await realBle.scanFacilities(6);
+      const resolved: ParkingFacility[] = [];
+      for (const beacon of beacons) {
+        const res = await api.getFacility(beacon.facilityCode);
+        if (res.success) resolved.push(res.data);
+      }
+      setFacilities(resolved);
+      setState("done");
+    } catch (e) {
+      setError((e as Error).message);
+      setState("error");
     }
-    setFacilities(resolved);
-    setScanning(false);
-    setScanned(true);
   };
+
+  const scanning = state === "scanning";
 
   return (
     <ScrollView className="flex-1" showsVerticalScrollIndicator={false} contentContainerClassName="pb-36">
@@ -38,19 +49,27 @@ export function DiscoverScreen({ navigation }: TabScreenProps<"Discover">) {
             </View>
             <Text className="text-primary font-bold text-base mb-1">DWARA- beacons</Text>
             <Text className="text-muted text-sm leading-relaxed text-center mb-4">
-              Each gate advertises as DWARA-&lt;facilityCode&gt;. Get within a few metres of the gate and scan.
+              Each gate advertises as DWARA-&lt;facilityCode&gt;. Get within a few metres of the
+              gate and scan.
             </Text>
             {scanning ? (
               <View className="h-12 items-center justify-center">
                 <ActivityIndicator color="#00B177" />
               </View>
             ) : (
-              <PrimaryButton label={scanned ? "Scan Again" : "Start Scan"} onPress={scan} />
+              <PrimaryButton label={state === "idle" ? "Start Scan" : "Scan Again"} onPress={scan} />
             )}
           </View>
         </Card>
 
-        {scanned && facilities.length === 0 && !scanning ? (
+        {error ? (
+          <Card>
+            <Text className="text-primary font-bold text-base mb-1">Bluetooth problem</Text>
+            <Text className="text-muted text-sm leading-relaxed">{error}</Text>
+          </Card>
+        ) : null}
+
+        {state === "done" && facilities.length === 0 ? (
           <Card>
             <View className="items-center py-2">
               <Text className="text-primary font-bold text-base mb-1">No gates found</Text>
@@ -62,7 +81,10 @@ export function DiscoverScreen({ navigation }: TabScreenProps<"Discover">) {
         ) : null}
 
         {facilities.map((f) => (
-          <Pressable key={f.id} onPress={() => navigation.navigate("StartSession", { facilityCode: f.facilityCode })}>
+          <Pressable
+            key={f.facilityId}
+            onPress={() => navigation.navigate("StartSession", { facilityCode: f.facilityCode })}
+          >
             <Card>
               <View className="flex-row items-center mb-4">
                 <View className="bg-brand-tint rounded-full p-3 items-center justify-center">
@@ -73,17 +95,18 @@ export function DiscoverScreen({ navigation }: TabScreenProps<"Discover">) {
                   <Text className="text-muted text-sm mt-0.5">{f.address}</Text>
                 </View>
               </View>
-              {/* Spec grid: metrics in a flex-row justify-between badge layout. */}
               <View className="flex-row justify-between">
                 <View className="items-center flex-1">
-                  <Text className="text-primary font-bold text-sm">{f.availableSlots}</Text>
-                  <Text className="text-muted text-xs mt-0.5">free slots</Text>
+                  <Text className="text-primary font-bold text-sm">
+                    {hourlyRate(f.pricingPolicy.lmvRate)}
+                  </Text>
+                  <Text className="text-muted text-xs mt-0.5">car rate</Text>
                 </View>
                 <View className="items-center flex-1">
                   <Text className="text-primary font-bold text-sm">
-                    ₹{(f.ratePerSecond * 3600).toFixed(0)}/hr
+                    {hourlyRate(f.pricingPolicy.mcRate)}
                   </Text>
-                  <Text className="text-muted text-xs mt-0.5">flat rate</Text>
+                  <Text className="text-muted text-xs mt-0.5">bike rate</Text>
                 </View>
                 <View className="items-center flex-1">
                   <Text className="text-primary font-bold text-sm">{f.facilityCode}</Text>

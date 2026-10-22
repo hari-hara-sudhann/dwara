@@ -5,7 +5,9 @@ import me.hari.dwara.dtos.ResponseObject;
 import me.hari.dwara.dtos.vehicle.*;
 import me.hari.dwara.entities.User;
 import me.hari.dwara.entities.Vehicle;
+import me.hari.dwara.entities.enums.SessionStatus;
 import me.hari.dwara.mappers.VehicleMapper;
+import me.hari.dwara.repositories.ParkingSessionRepository;
 import me.hari.dwara.repositories.UserRepository;
 import me.hari.dwara.repositories.VehicleRepository;
 import org.springframework.stereotype.Service;
@@ -19,6 +21,7 @@ import java.util.UUID;
 public class VehicleService {
     private final VehicleRepository vehicleRepository;
     private final UserRepository userRepository;
+    private final ParkingSessionRepository sessionRepository;
 
     public ResponseObject<VehicleCreatedDto> createVehicle(VehicleCreationRequestDto dto) {
         Optional<User> userContainer = userRepository.findById(dto.userId());
@@ -101,6 +104,14 @@ public class VehicleService {
 
         if (!vehicle.getUser().getUserId().equals(user.getUserId())) {
             return ResponseObject.failure( "User does not own the vehicle.");
+        }
+
+        // Spec §10 #8: a vehicle with a session in flight cannot be removed;
+        // the session references it. Let the user finish or cancel the session
+        // first, rather than failing on a foreign-key violation.
+        if (sessionRepository.existsByVehicle_VehicleIdAndSessionStatusIn(
+                vehicle.getVehicleId(), SessionStatus.ACTIVE)) {
+            return ResponseObject.failure("Vehicle has an active parking session.");
         }
 
         vehicleRepository.delete(vehicle);

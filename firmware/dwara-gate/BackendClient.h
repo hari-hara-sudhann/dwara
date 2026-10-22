@@ -96,7 +96,14 @@ class BackendClient {
   // GET /devices/{deviceId}/commands  (spec D11, the only backend-initiated
   // channel in scope). Expected 200:
   // { "command": "NONE" | "OPEN" | "KEEP_CLOSED" }
-  RemoteCommand pollCommands() {
+  //
+  // reachable reports whether the backend actually answered, so the caller can
+  // back off instead of hammering an unreachable server. NONE with
+  // reachable=true simply means "nothing queued".
+  RemoteCommand pollCommands(bool *reachable = nullptr) {
+    if (reachable != nullptr) {
+      *reachable = false;
+    }
     if (_transport == nullptr) {
       return RemoteCommand::NONE;
     }
@@ -116,6 +123,10 @@ class BackendClient {
     JsonDocument res;
     if (deserializeJson(res, http.body) != DeserializationError::Ok) {
       return RemoteCommand::NONE;
+    }
+
+    if (reachable != nullptr) {
+      *reachable = true;
     }
 
     const char *command = res["command"] | "NONE";

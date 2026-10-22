@@ -1,0 +1,457 @@
+\chapter{System Design}
+
+\section{System Architecture}
+
+\project{} is a three-surface system with one source of truth. The phone is an
+interface, the ESP32 is an actuator with a radio, and the backend owns identity,
+parking state and money.
+
+Three properties of this shape explain most of the code:
+
+\begin{enumerate}
+  \item \textbf{The application never authorises a gate.} It carries a session
+        identifier over BLE and displays the answer; it holds no credential a gate
+        would accept.
+  \item \textbf{The gate never decides.} It holds a device secret that lets it ask,
+        and a servo it may drive only after the answer arrives. Losing Wi-Fi closes
+        gates rather than opening them.
+  \item \textbf{The backend never touches hardware.} It returns a verdict and
+        records the state change, which keeps the mechanism replaceable.
+\end{enumerate}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Component} & \textbf{Responsibility} \\
+    \midrule
+    Mobile application & Registration, login and token persistence; vehicle
+      management; BLE discovery; session start; live fee; payment; gate commands;
+      history. \\
+    Backend & Identity and JWT, vehicles, facilities and pricing, session lifecycle,
+      fee computation, mock payment, gate verdicts, device registry, remote command
+      queue, stale-session sweep, health endpoint. \\
+    PostgreSQL & Durable state for users, vehicles, facilities, sessions, payments,
+      gates and commands; pricing stored as \code{jsonb}. \\
+    Gate firmware & BLE peripheral and GATT service, Wi-Fi client, servo actuation,
+      fixed-timer close, stall watchdog, remote-command poller. \\
+    Serial bridge & Demonstration-only relay from the firmware's framed serial
+      requests to the backend. \\
+    Test workflow & Compose profile that boots dependencies, proves the production
+      image is healthy, runs the suite and exports reports. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Component responsibilities.}
+  \label{tab:components}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Decision} & \textbf{Rationale and consequence} \\
+    \midrule
+    BLE advertisement as the facility identifier & No GPS, QR or manual entry; the
+      gate broadcasts \code{DWARA-<facilityCode>}. \\
+    One gate serves entry and exit & The direction is a software state, not a second
+      piece of hardware; the facility needs one servo. \\
+    Backend authorises, firmware obeys & A forged client cannot open a gate; the
+      firmware has no rule engine at all. \\
+    Backend clock is the only clock & Neither the phone nor the ESP32 can move a
+      bill; all timestamps are server-side. \\
+    Per-second flat tariff & Trivial to explain and audit; stored per facility as
+      JSON so prices change without a migration. \\
+    One active session per user and per vehicle & Removes a class of abuse and
+      simplifies the dashboard to a single active session. \\
+    Payment freezes the fee & The exit gate asks about payment, not about elapsed
+      time, so a queue at the exit cannot increase a bill. \\
+    Fixed-timer gate close & No sensors; eight seconds is long enough for a car and
+      short enough to limit tailgating. \\
+    Abstract actuator and transport & Servo, LED, Wi-Fi and serial are
+      interchangeable behind interfaces, which is what makes bench testing possible. \\
+    Stale-session sweep & A session abandoned before the gate would otherwise block
+      the account forever. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Key design decisions.}
+  \label{tab:key-decisions}
+\end{table}
+
+Deployment is a single Compose project. The development stack publishes two
+services; the test stack adds a third behind a profile, so ordinary development is
+unaffected.
+
+\section{Use Cases}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lXl@{}}
+    \toprule
+    \textbf{ID} & \textbf{Use case} & \textbf{Actor} \\
+    \midrule
+    UC1 & Register and sign in & Driver \\
+    UC2 & Manage vehicles & Driver \\
+    UC3 & Discover a facility over BLE & Driver \\
+    UC4 & Start a parking session & Driver \\
+    UC5 & Open the entry gate & Driver, gate \\
+    UC6 & View the running fee & Driver \\
+    UC7 & Pay and open the exit gate & Driver, gate \\
+    UC8 & Review session history & Driver \\
+    UC9 & Provision a facility and a gate & Operator \\
+    UC10 & Override a gate remotely & Operator, gate \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Use-case inventory.}
+  \label{tab:use-cases}
+\end{table}
+
+The two use cases that differ most from a conventional system are UC5 and UC10. In
+UC5 the driver's tap is a request, not an authorisation: the gate validates it with
+the backend. In UC10 the operator never contacts the gate; the command is queued and
+consumed by the gate's next poll.
+
+\subsection*{Detailed use case: open the exit gate (UC7)}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Field} & \textbf{Description} \\
+    \midrule
+    Precondition & The caller owns a session in \code{PAYMENT\_PENDING} with a
+      successful payment; the phone is in the foreground near the gate. \\
+    Main flow & 1. Driver taps \emph{Open exit gate}. 2. Application writes
+      \code{\{sessionId, intent:"EXIT"\}} to the gate. 3. Gate calls
+      \code{POST /gate/validate} with its device secret. 4. Backend verifies the
+      device, facility, state and payment, stamps the exit and returns
+      \code{open}. 5. Gate sweeps the servo, reports \code{OPENED}, holds eight
+      seconds, closes. 6. Application refreshes the session and shows completion. \\
+    Alternate flow & If the session is unpaid the backend returns
+      \code{keep\_closed/PAYMENT\_REQUIRED}; the gate reports \code{DENIED} and the
+      screen shows the payment prompt. \\
+    Alternate flow & If the gate already exited within the grace window, the
+      backend re-opens without changing state. \\
+    Failure & Backend unreachable: the gate reports
+      \code{DENIED/BACKEND\_UNREACHABLE} and stays closed. \\
+    Postcondition & Session is \code{EXITED} (or unchanged for a grace re-open); the
+      fee is frozen. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Use-case description for the exit flow.}
+  \label{tab:uc7}
+\end{table}
+
+\section{Layered Structure}
+
+The backend is layered rather than organised as a single inheritance tree:
+controllers depend on services, services on repositories and domain objects, and
+every external capability is an interface.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Package} & \textbf{Contents} \\
+    \midrule
+    \code{controllers} & Six REST controllers (\code{Auth}, \code{Vehicle},
+      \code{Facility}, \code{Session}, \code{Gate}, \code{Device}) and one
+      exception advice. \\
+    \code{services} & Eleven service classes: identity, vehicles, facilities,
+      sessions, billing, gate authorisation, provisioning, device authentication,
+      commands, polling client, scheduler. Four interfaces. \\
+    \code{repositories} & Seven Spring Data interfaces, including a locked user
+      lookup, a locked session lookup and a paged history query. \\
+    \code{entities} & Seven entities, eleven enums and the \code{PricingPolicy}
+      record. \\
+    \code{dtos} & Request records, response DTOs and the generic
+      \code{ResponseObject} envelope. \\
+    \code{configs} & Filter chain, JWT filter, admin-key filter and session timing
+      properties. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Layer contents.}
+  \label{tab:layers}
+\end{table}
+
+\section{Session Flow}
+
+\subsection{Entry}
+
+The entry path has three decisions that are easy to get wrong. The session is created
+\emph{before} the driver reaches the gate, so a failure at the gate does not lose the
+vehicle; the gate validates the device's facility before reading the session; and the
+entry timestamp is written inside the same transaction that decides \code{open}.
+
+\subsection{Session state machine}
+
+The session is the central object; every other rule refers to its state.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}llX@{}}
+    \toprule
+    \textbf{From} & \textbf{To} & \textbf{Trigger and rule} \\
+    \midrule
+    (new) & \code{CREATED} & start session, active facility, no active session for the
+      user or the vehicle \\
+    \code{CREATED} & \code{PARKED} & entry verdict \code{open}; entry time stamped \\
+    \code{CREATED} & \code{ABORTED} & explicit cancel, or the sweep after fifteen
+      minutes \\
+    \code{PARKED} & \code{PAYMENT\_PENDING} & payment succeeds; amount frozen \\
+    \code{PAYMENT\_PENDING} & \code{EXITED} & exit verdict \code{open} with a
+      successful payment \\
+    \code{EXITED} & (re-open) & exit verdict inside the grace window; no state
+      change \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Legal session transitions. Everything else is refused with a reason.}
+  \label{tab:transitions}
+\end{table}
+
+\subsection{Gate decision table}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}llX@{}}
+    \toprule
+    \textbf{Intent} & \textbf{State} & \textbf{Verdict} \\
+    \midrule
+    \code{ENTRY} & \code{CREATED} at the same facility & \code{open}, session becomes
+      \code{PARKED} \\
+    \code{ENTRY} & \code{PARKED}, \code{PAYMENT\_PENDING}, \code{EXITED} &
+      \code{keep\_closed} / \code{WRONG\_STATE\_FOR\_ENTRY} \\
+    \code{ENTRY} & \code{ABORTED} & \code{keep\_closed} / \code{STALE\_SESSION} \\
+    \code{EXIT} & \code{PAYMENT\_PENDING} with a successful payment & \code{open},
+      session becomes \code{EXITED} \\
+    \code{EXIT} & \code{PAYMENT\_PENDING} without payment & \code{keep\_closed} /
+      \code{PAYMENT\_REQUIRED} \\
+    \code{EXIT} & \code{CREATED} or \code{PARKED} & \code{keep\_closed} /
+      \code{PAYMENT\_REQUIRED} \\
+    \code{EXIT} & \code{EXITED} inside the grace window & \code{open}, no state
+      change \\
+    \code{EXIT} & \code{EXITED} outside the grace window & \code{keep\_closed} /
+      \code{STALE\_SESSION} \\
+    any & unknown session & \code{keep\_closed} / \code{UNKNOWN\_SESSION} \\
+    any & device at another facility & \code{keep\_closed} / \code{WRONG\_FACILITY} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Decision table implemented by the gate service.}
+  \label{tab:decisions}
+\end{table}
+
+\subsection{BLE interaction design}
+
+The BLE link is a request channel: it carries a session identifier and an intent, and
+returns the gate's answer. It carries no credential and no verdict the gate would
+trust on its own. The service and characteristic layout follows the Generic
+Attribute Profile of the Bluetooth Core Specification \cite{ble_gatt}.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Element} & \textbf{Design} \\
+    \midrule
+    Advertisement & local name \code{DWARA-<facilityCode>}; service UUID
+      \code{4fafc201-1fb5-459e-8fcc-c5c9c331914b} \\
+    Command characteristic & \code{beb5483e-36e1-4688-b7f5-ea07361b26a8}, write \\
+    Status characteristic & \code{c7d4a2d0-5f3a-4c3e-9b1a-8e2f6d4c5b7a}, read and
+      notify \\
+    Command payload & \code{\{"sessionId":"<uuid>","intent":"ENTRY"|"EXIT"|"CLOSE"\}},
+      at most 128 bytes \\
+    Status payload & \code{\{"sessionId":"<uuid>","result":"OPENED","reason":"NONE"\}} \\
+    Timing & 800\,ms servo settle, 8\,s open hold, 3\,s stall watchdog, 5\,s command
+      poll, 15\,s application round-trip budget \\
+    \bottomrule
+  \end{tabularx}
+  \caption{BLE protocol design.}
+  \label{tab:ble}
+\end{table}
+
+\section{Database Design}
+
+Seven entities describe the domain. Primary keys are server-generated UUIDs, money is
+decimal, and enumerations are stored as strings so a database inspection is readable
+without a lookup table.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Entity} & \textbf{Fields and role} \\
+    \midrule
+    \code{User} & \code{userId}, unique \code{email}, \code{name},
+      \code{passwordHash}, \code{userRole}, \code{createdAt}. Table name
+      \code{users}, because \code{user} is reserved in PostgreSQL. \\
+    \code{Vehicle} & \code{vehicleId}, \code{numberPlate}, \code{vehicleType},
+      owning user. \\
+    \code{ParkingFacility} & \code{facilityId}, unique \code{facilityCode},
+      \code{name}, \code{address}, \code{status}, \code{PricingPolicy} as
+      \code{jsonb}. \\
+    \code{ParkingSession} & \code{sessionId}, facility, user, vehicle,
+      \code{sessionStatus}, \code{createdAt}, \code{entryTimestamp},
+      \code{exitTimestamp}, \code{exitGateOpenedAt}, \code{totalFee}. \\
+    \code{Payment} & \code{paymentId}, session, \code{amount}, \code{status},
+      \code{transactionReference}. \\
+    \code{GateController} & \code{controllerId}, facility, \code{gateType},
+      \code{firmwareVersion}, write-only \code{deviceSecretHash}. \\
+    \code{DeviceCommand} & \code{commandId}, device, \code{command}, \code{status},
+      \code{createdAt}, \code{deliveredAt}. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Entity design.}
+  \label{tab:entities}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Enumeration} & \textbf{Values and meaning} \\
+    \midrule
+    \code{SessionStatus} & \code{CREATED}, \code{PARKED}, \code{PAYMENT\_PENDING},
+      \code{EXITED}, \code{ABORTED}; the first three form the active set. \\
+    \code{PaymentStatus} & \code{SUCCESS}, with room for failure states. \\
+    \code{VehicleType} & \code{MC}, \code{LMV}, \code{HMV}. \\
+    \code{GateType} & \code{ENTRY}, \code{EXIT}. \\
+    \code{GateIntent} & \code{ENTRY}, \code{EXIT}. \\
+    \code{GateDecision} & \code{OPEN}, \code{KEEP\_CLOSED}. \\
+    \code{DenyReason} & \code{NONE}, \code{STALE\_SESSION},
+      \code{WRONG\_STATE\_FOR\_ENTRY}, \code{PAYMENT\_REQUIRED},
+      \code{WRONG\_FACILITY}, \code{UNKNOWN\_SESSION}. \\
+    \code{ParkingFacilityStatus} & \code{ACTIVE}, \code{INACTIVE},
+      \code{MAINTENANCE}. \\
+    \code{UserRole} & \code{USER}. \\
+    \code{DeviceCommandType} & \code{NONE}, \code{OPEN}, \code{KEEP\_CLOSED}. \\
+    \code{CommandStatus} & \code{PENDING}, \code{DELIVERED}. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Enumerations.}
+  \label{tab:enums}
+\end{table}
+
+Three modelling details carry most of the lifecycle safety:
+
+\begin{itemize}
+  \item \code{createdAt} is written when the user taps \emph{start}. It is what the
+        stale-session sweep measures, because a session that never reached a gate has
+        no entry time.
+  \item \code{entryTimestamp} is written only by the entry verdict. It is the only
+        input to billing, so a session with no entry is provably free.
+  \item \code{exitGateOpenedAt} is separate from \code{exitTimestamp} in intent,
+        though in practice they hold the same instant. The grace window is measured
+        from the gate opening, not from payment, so paying early and exiting late
+        does not forfeit the re-open.
+\end{itemize}
+
+\section{UI Design}
+
+The application is deliberately thin: it renders state, collects intent and carries
+messages. It does not decide fees or gate outcomes.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Screen} & \textbf{Purpose and backend calls} \\
+    \midrule
+    Welcome & static onboarding \\
+    Register & \code{POST /auth/register}, then login \\
+    Login & \code{POST /auth/login}, then \code{GET /auth/me} \\
+    Dashboard & active session and vehicles (\code{/sessions/active}, \code{/vehicles}) \\
+    Discover & BLE scan, then \code{GET /facilities/\{code\}} \\
+    Start Session & vehicle picker and \code{POST /sessions} \\
+    Active Session & entry/exit BLE commands, live status \\
+    Payment & fee polling and \code{POST /sessions/\{id\}/pay} \\
+    Activity & \code{GET /sessions?page=0\&size=50} \\
+    Profile & vehicle CRUD, sign-out, bench entry point \\
+    Gate Test & manual BLE commands for diagnostics \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Screen design.}
+  \label{tab:screens}
+\end{table}
+
+Navigation is a bottom tab bar over a native stack: the session screens are a stack
+because they depend on each other, while discovery, activity and profile are
+independent tabs. The payment screen polls the fee every two seconds while it is
+visible and stops on unmount, so a background screen never accumulates requests.
+
+\section{Security Design}
+
+Three kinds of caller exist, and each has its own credential. They are not
+interchangeable, and each is deliberately narrow.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lXl@{}}
+    \toprule
+    \textbf{Scheme} & \textbf{Used for} & \textbf{Storage} \\
+    \midrule
+    JWT bearer & Every user-facing endpoint. The subject is the user id; the token
+      carries no role and no profile. & Stateless; signed with a base64 secret from
+      the environment. \\
+    \code{X-Admin-Key} & Facility and device administration. Compared before the
+      authorization rules run. & Environment variable; blank closes the surface. \\
+    Device bearer secret & \code{/gate/validate} and the command poll. 256 bits of
+      entropy, returned once at registration. & BCrypt hash only. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Credential schemes.}
+  \label{tab:credentials}
+\end{table}
+
+The filter chain checks administration before routing and extracts JWTs before the
+web authorization rules \cite{springsecurity}. A token is parsed only if it has three
+dot-separated segments, because device secrets arrive in the same
+\code{Authorization} header and must not be mistaken for tokens. A malformed or
+expired token leaves the request anonymous rather than failing inside the filter; the
+authorization rule then decides. Passwords and device secrets use the same one-way
+treatment, so a database dump yields neither a usable password nor a usable gate
+credential.
+
+The token design follows the JSON Web Token standard \cite{rfc7519}: a signed
+subject, an issue time and an expiry, with no sensitive claim in the payload. The
+threat model below follows the structure recommended for API security assessments
+\cite{owasp2023} and records accepted risk rather than hiding it.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{5.4cm}>{\raggedright\arraybackslash}X@{}}
+    \toprule
+    \textbf{Threat} & \textbf{Mitigation or accepted risk (v1)} \\
+    \midrule
+    Rogue BLE client writes another user's session id & Gate re-validates with the
+      backend; worst case is \code{keep\_closed}. \\
+    Replay at the exit gate & Exit requires payment and the right state;
+      \code{EXITED} is terminal apart from one bounded grace re-open. \\
+    Stolen JWT & Bearer-token risk bounded by the configured expiry; the client
+      clears the token on 401/403. \\
+    Device secret extracted from a flashed board & Only the hash is stored, but
+      physical access to a provisioned unit is accepted as game over. \\
+    BLE spoofing or man-in-the-middle & Accepted in version one; the backend is the
+      trust anchor, not the link. \\
+    Fee manipulation & All arithmetic is server-side and uses only the backend
+      clock. \\
+    Unauthenticated administration & Static key header, closed by default when the
+      key is unset. \\
+    Payment fraud & The provider is a mock; no money moves in version one. \\
+    Tailgating & Fixed-timer close with no sensors; accepted and documented. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Threat model for the version-one posture.}
+  \label{tab:threats}
+\end{table}

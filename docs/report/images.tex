@@ -1,0 +1,101 @@
+% ===========================================================================
+%  images.tex -- THE ONLY FILE THAT NEEDS EDITING WHEN IMAGES ARE ADDED
+% ===========================================================================
+%
+%  Every figure in this report is referenced through a \newcommand defined
+%  here. To add a figure:
+%
+%    1. drop the file into  docs/report/images/
+%    2. change the path in the corresponding \newcommand below
+%
+%  Chapters never mention a file name; they call
+%
+%     \reportimage{\ImgGantt}{Sprint schedule.}{fig:gantt}
+%
+%  and the optional first argument sets the width as a fraction of \textwidth
+%  (default 0.85):
+%
+%     \reportimage[0.6]{\ImgHardwareWiring}{Wiring.}{fig:wiring}
+%
+%  If a file has not been added yet, \reportimage prints a framed placeholder
+%  naming the missing macro instead of failing the build, so the report always
+%  compiles. The placeholder is a reminder, not an error: replace it by adding
+%  the file named in the macro.
+%
+%  Expected files (all relative to this directory):
+%
+%    images/logo.png                     institution logo (title page)
+%    images/hardware-wiring.png          ESP32 + MG90S wiring
+%    images/gantt.png                    sprint schedule
+%    images/test-workflow.png            docker-test.sh pipeline
+%    images/tool-git.png                 Git/GitHub screenshot
+%    images/tool-docker.png              Docker Compose screenshot
+%    images/tool-postman.png             Postman screenshot
+%    images/tool-vscode.png              VS Code screenshot
+%    images/tool-arduino.png             Arduino CLI / IDE screenshot
+%    images/screen-dashboard.png         output screenshot: dashboard
+%    images/screen-discover.png          output screenshot: BLE discovery
+%    images/screen-active.png            output screenshot: active session
+%    images/screen-payment.png           output screenshot: payment
+%    images/screen-activity.png          output screenshot: history
+%    images/coverage.png                 JaCoCo coverage report screenshot
+%
+% ===========================================================================
+
+% ---------------------------------------------------------------- title page
+\newcommand{\ImgLogo}{images/logo.png}
+
+% --------------------------------------------------------------- other figures
+\newcommand{\ImgHardwareWiring}{images/hardware-wiring.png}
+\newcommand{\ImgGantt}{images/gantt.png}
+
+% -------------------------------------------------------------------- testing
+\newcommand{\ImgTestWorkflow}{images/test-workflow.png}
+\newcommand{\ImgCoverage}{images/coverage.png}
+
+% -------------------------------------------------------------- tool captures
+\newcommand{\ImgToolGit}{images/tool-git.png}
+\newcommand{\ImgToolDocker}{images/tool-docker.png}
+\newcommand{\ImgToolPostman}{images/tool-postman.png}
+\newcommand{\ImgToolVsCode}{images/tool-vscode.png}
+\newcommand{\ImgToolArduino}{images/tool-arduino.png}
+
+% ------------------------------------------------------------- app screenshots
+\newcommand{\ImgScreenDashboard}{images/screen-dashboard.png}
+\newcommand{\ImgScreenDiscover}{images/screen-discover.png}
+\newcommand{\ImgScreenActive}{images/screen-active.png}
+\newcommand{\ImgScreenPayment}{images/screen-payment.png}
+\newcommand{\ImgScreenActivity}{images/screen-activity.png}
+
+% ===========================================================================
+%  Rendering helpers -- only the paths above need to change.
+% ===========================================================================
+
+% \reportlogo{macro}: title-page logo, gracefully degrades to a placeholder.
+\newcommand{\reportlogo}[1]{%
+  \IfFileExists{#1}{%
+    \includegraphics[width=0.30\textwidth]{#1}%
+  }{%
+    \fbox{\begin{minipage}[c][3.2cm][c]{0.34\textwidth}
+      \centering\itshape\small Image not found\\[2pt]
+      \texttt{\detokenize{#1}}
+    \end{minipage}}%
+  }%
+}
+
+% \reportimage[width fraction]{macro}{caption}{label}
+\newcommand{\reportimage}[4][0.85]{%
+  \begin{figure}[htbp]
+    \centering
+    \IfFileExists{#2}{%
+      \includegraphics[width=#1\textwidth]{#2}%
+    }{%
+      \fbox{\begin{minipage}[c][4.6cm][c]{#1\textwidth}
+        \centering\itshape\small Image not found\\[2pt]
+        \texttt{\detokenize{#2}}
+      \end{minipage}}%
+    }%
+    \caption{#3}
+    \label{#4}
+  \end{figure}%
+}

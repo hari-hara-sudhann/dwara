@@ -20,11 +20,30 @@ spring:
 server:
   port: ${APP_PORT:8080}
 
+# Docker/compose readiness gate only: /actuator/health is public, every other
+# actuator endpoint stays closed (see SecurityConfig).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
 jwt:
   secret: ${JWT_SECRET}
   expiration: ${JWT_EXPIRATION}
 
 dwara:
+  # Spec D13: static admin key for facility/device administration. Set
+  # DWARA_ADMIN_KEY in the environment; blank closes the admin surface.
+  admin-key: ${DWARA_ADMIN_KEY:}
+  # Seeds one ACTIVE demo facility on startup so the app has something to park
+  # at before an operator creates facilities through the admin API. Disable with
+  # DWARA_SEED_DEMO_FACILITY=false (or a non-test deployment seed of your own).
+  seed-demo-facility: ${DWARA_SEED_DEMO_FACILITY:true}
+  demo-facility-code: ${DWARA_DEMO_FACILITY_CODE:FAC-0001}
   sessions:
     # Spec D20: a CREATED session the user never validated at a gate is aborted
     # after this long.

@@ -39,7 +39,8 @@ class ServoGateActuator final : public GateActuator {
     IDLE_CLOSED,
     MOVING,       // sweep in progress (either direction)
     OPEN_IDLE,    // resting at OPEN_ANGLE
-    FAULT,
+    FAILSAFE,     // watchdog fired: driving back to CLOSED before releasing PWM
+    FAULT,        // latched fault; open()/close() refuse, output detached
   };
 
   bool commandAngle(uint8_t angle, Phase endPhase);
@@ -52,6 +53,7 @@ class ServoGateActuator final : public GateActuator {
   Phase _phase;
   Phase _pendingEndPhase;   // phase to enter once the settle window elapses
   uint32_t _moveStartedAt;  // millis() at the last commanded move
+  uint32_t _failsafeStartedAt;  // millis() when the failsafe sweep began
   bool _settled;
   bool _faulted;
 };

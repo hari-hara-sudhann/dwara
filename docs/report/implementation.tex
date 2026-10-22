@@ -1,0 +1,285 @@
+\chapter{Implementation}
+
+\section{Technology Stack}
+
+Every technology in Table~\ref{tab:stack} was chosen for a reason that shows up in
+the design: a managed runtime for the transactional backend, a shared language for
+the phone and the API contract, and a toolchain that can be installed on a student
+laptop. Version and usage details for the stack are taken from the official
+documentation cited in the bibliography
+\cite{springboot,springsecurity,postgres,expo,bleplx,esp32core,arduinojson,esp32servo,compose,jacoco,junit,mockito,jjwt}.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lllX@{}}
+    \toprule
+    \textbf{Layer} & \textbf{Technology} & \textbf{Version} & \textbf{Why} \\
+    \midrule
+    Backend & Spring Boot & 4.1 & Transactional REST, dependency injection and
+      security out of the box. \\
+    Language & Java & 21 & Records, pattern matching and a mature JPA ecosystem. \\
+    Persistence & Spring Data JPA / Hibernate & Boot-managed & Repository interfaces,
+      pessimistic locking, JSON column mapping. \\
+    Database & PostgreSQL & 16 & Strong constraints, \code{jsonb} for pricing,
+      reliable locking. \\
+    Security & Spring Security + JJWT & 0.12.x & Filter chain and signed tokens
+      without a custom crypto implementation. \\
+    Build & Maven (wrapper) & Boot-managed & Reproducible builds in the image; the
+      wrapper removes a host install. \\
+    Testing & JUnit 5, Mockito, AssertJ & Boot-managed & Fast service tests with
+      replaceable collaborators. \\
+    Coverage & JaCoCo & 0.8.13 & Line gate scoped to the service layer. \\
+    Mobile & Expo / React Native & 57 / 0.86 & One TypeScript codebase for iOS and
+      Android; native module support for BLE. \\
+    Mobile language & TypeScript & 6.0 & The API envelope and DTOs are typed once
+      and checked at build time. \\
+    BLE & \code{react-native-ble-plx} & 3.5 & Maintained GATT client with notify
+      support; works in a development build. \\
+    Firmware & Arduino (ESP32 core) & esp32 board package & BLE and Wi-Fi libraries
+      on the same board; no RTOS work required. \\
+    Firmware libs & ArduinoJson, ESP32Servo & 7.x, current & Small JSON documents,
+      non-blocking servo control. \\
+    Packaging & Docker, Compose v2 & 24+ & One command to build, run and test the
+      backend. \\
+    API testing & Postman / Newman & current & Collection-based contract checks for
+      the auth controller. \\
+    Version control & Git / GitHub & current & Branch-based work and history. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Technology stack.}
+  \label{tab:stack}
+\end{table}
+
+\section{Module Description}
+
+\subsection{Identity module}
+
+Registration hashes the password with BCrypt, ignores any client-supplied role and
+writes \code{USER}. Login verifies the hash and signs a JWT whose subject is the
+user id; the token carries no role and no profile, so it cannot be used to escalate
+privileges and profile changes do not invalidate it. A filter converts the bearer
+header into an authenticated principal whose name is that id. It parses only tokens
+with three dot-separated segments, because device secrets arrive in the same header;
+an invalid token is left anonymous and the authorization rules decide the response.
+
+\textbf{Design note.} The authentication namespace is public by design ---
+registration and login cannot require a token. \code{GET /auth/me} is meaningful only
+with a bearer token, and it is the mobile client's launch call that turns a persisted
+token back into a profile.
+
+\subsection{Vehicle module}
+
+Vehicle operations are owner-scoped. The controller takes the user id from the token,
+never from the body, and the service resolves the record and checks ownership before
+any mutation. Plate and class are the only attributes, which keeps the form short and
+matches what a gate actually needs.
+
+\subsection{Facility and administration module}
+
+Facilities are read by \code{facilityCode}, because that is what the gate advertises.
+The read model includes the pricing policy, so the application can show an hourly
+estimate without a second call. Creation, pricing and status changes require the
+administrator header. A new facility starts \code{INACTIVE} and must be activated
+before it accepts sessions, which prevents a half-configured site from taking
+parking sessions. A startup seeder inserts one active demo facility so a fresh stack
+is usable immediately.
+
+\subsection{Session module}
+
+Session creation performs the full validation sequence in one transaction: the user
+must exist, the facility must exist and be active, the vehicle must exist and belong
+to the caller, and neither the user nor the vehicle may hold an active session. The
+read-then-write race is closed by locking the user row, so two concurrent requests
+serialise and the second sees the first session. The listing endpoint returns the
+caller's own sessions, newest first, with an optional status filter and a page size
+clamped to one hundred.
+
+\subsection{Billing and payment module}
+
+The live fee returns the frozen amount once one exists, refuses a session that has not
+entered, and otherwise multiplies the facility rate by whole elapsed seconds. The
+final fee is recomputed at payment and rounded up to the paisa, then written to
+\code{totalFee}. Payment locks the session row, so a double tap or a client retry
+sees \code{PAYMENT\_PENDING} and is refused rather than charged twice. The mock
+provider implements a two-method interface and always succeeds; replacing it with a
+gateway means implementing the same interface.
+
+\subsection{Gate authorisation module}
+
+The gate service is the only place where entry and exit are decided. It checks the
+device, then the facility, then the session state, and it writes the timestamp that
+starts or ends billing. Granting an entry is the only place that writes
+\code{entryTimestamp}; granting an exit is the only place that writes
+\code{exitGateOpenedAt}. Because both methods are transactional, a verdict and the
+state it authorises cannot drift apart.
+
+\subsection{Device and command module}
+
+Registration generates 256 bits from a secure random source, returns the base64url
+secret once and stores only its BCrypt hash. Device authentication treats an unknown
+device, an unprovisioned device and a wrong secret identically, so a caller cannot
+probe which ids exist. Remote commands are rows rather than sockets: an operator
+queues \code{OPEN} or \code{KEEP\_CLOSED} as \code{PENDING}, the gate's next poll
+takes the oldest pending row, marks it \code{DELIVERED} and returns it. The poll is
+the acknowledgement, so a gate that was offline still receives the command when it
+returns and never receives it twice.
+
+\subsection{Scheduled maintenance module}
+
+A scheduled component runs every minute and aborts \code{CREATED} sessions older than
+fifteen minutes, measured against \code{createdAt}. It is a thin trigger; the query
+and state change live in the session service so they can be tested without waiting
+for a scheduler. Both the interval and the age threshold are configuration
+properties.
+
+\subsection{Mobile application modules}
+
+The REST client owns the base URL, the token header and the envelope. It collapses
+the backend's semantics into three outcomes every screen can handle: success, a
+business refusal to display, and an authentication failure that clears the token and
+returns to login. The BLE client scans by service UUID, derives the facility code
+from the local name, caches one connection per facility, subscribes to the status
+characteristic before writing, and resolves with the first notification that matches
+the session it is waiting for. Notifications for other sessions are ignored, which
+makes a concurrent remote command harmless to a waiting screen.
+
+\subsection{Firmware modules}
+
+The sketch is a loop around three interchangeable pieces: a transport
+(\code{WiFiBackendTransport} or \code{SerialBackendTransport}), an authentication
+service (\code{RemoteAuthService} or the bench-only
+\code{PermissiveAuthService}), and an actuator (\code{ServoGateActuator} or the
+legacy \code{LedGateActuator}). The transport is selected once at boot by sampling
+GPIO26. Above those interfaces there is one gate state machine, so changing the
+transport for a demonstration changes no timeout, no payload and no fail-closed
+behaviour.
+
+\reportimage[0.7]{\ImgHardwareWiring}{Gate wiring: servo signal on GPIO27, an
+external 5\,V servo supply with a common ground and a decoupling capacitor, and the
+transport-select jumper on GPIO26.}{fig:wiring}
+
+\section{Key Code Excerpts}
+
+The complete implementation is in the public repository; the excerpts below are the
+four pieces that carry the most design weight.
+
+\subsection{Session creation under a row lock}
+
+\begin{lstlisting}[style=java,caption={The active-session check is read-then-write,
+so the user row is locked for the transaction.},label={lst:create-session}]
+@Transactional
+public ResponseObject<UUID> createSession(SessionCreationRequestDto dto) {
+    User user = userRepository.findByIdForUpdate(dto.userId()).orElse(null);
+    if (user == null) return ResponseObject.failure("User does not exist.");
+
+    ParkingFacility facility = facilityRepository
+            .findByFacilityCode(dto.facilityCode()).orElse(null);
+    if (facility == null)
+        return ResponseObject.failure("Parking facility does not exist.");
+    if (facility.getStatus() != ParkingFacilityStatus.ACTIVE)
+        return ResponseObject.failure("Parking facility is not active.");
+
+    Vehicle vehicle = vehicleRepository.findById(dto.vehicleId()).orElse(null);
+    if (vehicle == null) return ResponseObject.failure("Vehicle does not exist.");
+    if (!vehicle.getUser().getUserId().equals(user.getUserId()))
+        return ResponseObject.failure("Vehicle does not belong to the user.");
+
+    if (sessionRepository.existsByUser_UserIdAndSessionStatusIn(
+            user.getUserId(), ACTIVE_STATUSES))
+        return ResponseObject.failure("User already has an active parking session.");
+    if (sessionRepository.existsByVehicle_VehicleIdAndSessionStatusIn(
+            vehicle.getVehicleId(), ACTIVE_STATUSES))
+        return ResponseObject.failure("Vehicle already has an active parking session.");
+
+    ParkingSession session = SessionMapper
+            .creationRequestToSession(dto, user, facility, vehicle);
+    sessionRepository.save(session);
+    return ResponseObject.success("Session successfully created", session.getSessionId());
+}
+\end{lstlisting}
+
+\subsection{Payment freezes the fee}
+
+\begin{lstlisting}[style=java,caption={The session row is locked, the fee is frozen
+and the receipt records the backend's payment time.},label={lst:pay}]
+@Transactional
+public ResponseObject<PaymentReceiptDto> pay(UUID sessionId, UUID userId) {
+    ParkingSession session = sessionRepository.findByIdForUpdate(sessionId)
+            .orElse(null);
+    if (session == null)
+        return ResponseObject.failure("Parking session does not exist.");
+    if (userId != null && !isOwnedBy(session, userId))
+        return ResponseObject.failure("Parking session does not belong to the user.");
+    if (session.getSessionStatus() != SessionStatus.PARKED)
+        return ResponseObject.failure("Only a parked session can be paid for.");
+
+    BigDecimal fee = calculateFinalFee(session);
+    PaymentOutcome outcome = paymentService.charge(session.getSessionId(), fee);
+    if (!outcome.successful())
+        return ResponseObject.failure("Payment was not successful.");
+
+    Instant paidAt = Instant.now();               // backend clock only
+    session.setTotalFee(fee);
+    session.setSessionStatus(SessionStatus.PAYMENT_PENDING);
+    sessionRepository.save(session);
+    // ... persist the Payment row and return the receipt
+}
+\end{lstlisting}
+
+\subsection{Exit verdict with a grace re-open}
+
+\begin{lstlisting}[style=java,caption={Exit is decided from state and payment; the
+grace window is measured from the gate opening.},label={lst:exit}]
+switch (session.getSessionStatus()) {
+    case ABORTED -> { return keepClosed(DenyReason.STALE_SESSION); }
+    case EXITED -> {
+        return withinExitGraceWindow(session)
+                ? open()
+                : keepClosed(DenyReason.STALE_SESSION);
+    }
+    case PAYMENT_PENDING -> {
+        if (!hasSuccessfulPayment(session))
+            return keepClosed(DenyReason.PAYMENT_REQUIRED);
+        Instant exitedAt = Instant.now();
+        session.setSessionStatus(SessionStatus.EXITED);
+        session.setExitTimestamp(exitedAt);
+        session.setExitGateOpenedAt(exitedAt);
+        sessionRepository.save(session);
+        return open();
+    }
+    // CREATED / PARKED - not paid yet
+    default -> { return keepClosed(DenyReason.PAYMENT_REQUIRED); }
+}
+\end{lstlisting}
+
+\subsection{BLE round trip in the application}
+
+\begin{lstlisting}[style=typescript,caption={Subscribe before write, filter by session
+id, and give the whole round trip a fifteen-second budget.},label={lst:ble}]
+const status = await this.withStatusNotification(device, sessionId, async () => {
+  await device.writeCharacteristicWithResponseForService(
+    SERVICE_UUID,
+    COMMAND_CHAR_UUID,
+    Buffer.from(JSON.stringify({ sessionId, intent }), "utf8").toString("base64")
+  );
+});
+
+if (!status) {
+  throw new Error(
+    `Gate ${facilityCode} did not answer over BLE. Move closer and check power.`);
+}
+return { result: status.result, reason: status.reason || "NONE" };
+\end{lstlisting}
+
+\subsection{Firmware transport selection}
+
+\begin{lstlisting}[style=cpp,caption={One pin decides the transport at boot; all gate
+logic above it is shared.},label={lst:firmware-select}]
+static BackendTransport *selectTransport() {
+    pinMode(NETWORK_MODE_PIN, INPUT_PULLUP);
+    delay(10);
+    if (digitalRead(NETWORK_MODE_PIN) == LOW) return &serialTransport;
+    return &wifiTransport;                       // production path
+}
+\end{lstlisting}

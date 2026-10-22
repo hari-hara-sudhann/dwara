@@ -30,7 +30,15 @@
           "bluetoothAlwaysPermission": "Allow Dwara to find and open parking gates nearby"
         }
       ],
-      "react-native-ble-plx"
+      "react-native-ble-plx",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "enableSceneSupport": true
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {

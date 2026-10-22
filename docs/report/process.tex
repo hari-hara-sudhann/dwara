@@ -1,0 +1,183 @@
+\chapter{Software Process Model and Project Planning}
+
+\section{Choice of Process Model}
+
+The project followed an \textbf{iterative, sprint-based (Agile) model} rather than a
+single waterfall pass. Four properties of the problem made the choice almost
+forced.
+
+\begin{enumerate}
+  \item \textbf{The hardware was the least predictable part.} Servo power, BLE
+        behaviour on iOS and Wi-Fi reliability could only be characterised by
+        building and running the gate. A plan that fixed every detail up front
+        would have been rewritten after the first bench test.
+  \item \textbf{Correctness was cheap to check but expensive to guess.} The session
+        lifecycle has a small number of states and many illegal transitions. Writing
+        the transitions down as tests and then iterating until they passed was faster
+        and safer than elaborating them on paper.
+  \item \textbf{The work could be sliced vertically.} Every increment could deliver a
+        working path through all three surfaces --- for example, ``start a session
+        and see it on the dashboard'' --- instead of completing one layer at a time.
+        Vertical slices kept the system demonstrable after every sprint.
+  \item \textbf{The team was small and part-time.} Short sprints with a single
+        demonstrable outcome tolerate academic schedules far better than a monolithic
+        phase plan.
+\end{enumerate}
+
+The model was Scrum-inspired but deliberately lightweight: a single prioritised
+backlog derived from the architecture specification, one-week to ten-day sprints, a
+working demonstration at the end of each sprint, and a written decision log when a
+question could not be settled by the specification. There were no daily stand-ups
+and no story-point estimates; progress was measured by what could be executed.
+
+The definition of done for every increment was the same and is worth stating because
+it explains the shape of the repository: \emph{the feature works end to end, its
+service-layer lines are covered by tests, the relevant document is updated, and
+\code{mvn verify} is green}. Documentation was treated as part of the increment, not
+as a final phase, which is why the API reference, BLE protocol and firmware notes
+match the code.
+
+Waterfall was rejected because the hardware findings would have arrived in the
+verification phase, after the backend design had been frozen. A pure prototype
+model was rejected because the deliverable is an assessed project with a written
+specification, a documented threat model and reproducible evidence; those artefacts
+need a plan that produces them incrementally.
+
+\section{Project Schedule}
+
+Development ran for eleven weeks, with a short baseline week at the start and a
+final verification week. Sprints were sequenced by dependency: identity first, because
+every other endpoint needs a caller; money second, because the exit gate depends on
+payment; hardware third, once the contract was stable; verification and writing
+last, against a system that no longer changed shape.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}llX@{}}
+    \toprule
+    \textbf{Sprint} & \textbf{Dates} & \textbf{Goal and deliverable} \\
+    \midrule
+    S0 & 07--11 Aug & Baseline and decisions. Repository, architecture
+      specification, decision log D1--D23, risk list. \\
+    S1 & 12--18 Aug & Identity. Registration, login, JWT issue and verification,
+      security filter chain. \\
+    S2 & 19--25 Aug & Vehicles and facilities. Owner-scoped CRUD, facility lookup by
+      code, admin-key surface, demo seeder. \\
+    S3 & 26 Aug--01 Sep & Sessions and money. Creation, anti-abuse rule, per-second
+      fee, mock payment, cancellation, state machine. \\
+    S4 & 02--08 Sep & Gate authorisation and devices. Entry/exit verdicts, device
+      provisioning and secrets, remote-command queue. \\
+    S5 & 09--15 Sep & Lifecycle hardening. Stale-session sweep, grace window,
+      exception advice, history paging. \\
+    S6 & 16--22 Sep & Mobile application. Typed REST client, token persistence,
+      eleven screens on real data. \\
+    S7 & 23--29 Sep & BLE. Discovery, GATT round trip, real transport in the
+      application; firmware transports and servo. \\
+    S8 & 30 Sep--08 Oct & Firmware completion. Remote-command poller, stall
+      watchdog, serial bridge for the demo. \\
+    S9 & 09--15 Oct & Verification. Docker Compose test workflow, coverage gate,
+      report collection. \\
+    S10 & 16--22 Oct & Documentation and hand-over. API reference, protocol and
+      hardware guides, Postman collection, this report. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Sprint plan.}
+  \label{tab:sprints}
+\end{table}
+
+\reportimage[0.9]{\ImgGantt}{Gantt chart of the ten-week schedule, showing the
+dependency between identity, billing, hardware and verification work.}{fig:gantt}
+
+Sprints S1--S5 built the backend and its tests; S6--S8 built the phone and the gate
+against that contract; S9 built the machinery that proves the whole thing works. The
+ordering meant that the firmware was written against an API that had already been
+tested, so a gate failure could be attributed to hardware or transport rather than
+to an unfinished backend.
+
+\section{Risk Analysis}
+
+Risks were reviewed at the start of each sprint. Table~\ref{tab:risks} lists the
+significant ones, the mitigation chosen and what actually happened.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}XllX@{}}
+    \toprule
+    \textbf{Risk} & \textbf{Likelihood} & \textbf{Impact} &
+    \textbf{Mitigation and outcome} \\
+    \midrule
+    Servo browns out the ESP32 when the gate moves & High & High &
+      External 5\,V supply, common ground and a decoupling capacitor were made
+      mandatory; the actuator is behind an interface so an LED stand-in can be
+      swapped in one line. The servo build is current. \\
+    BLE notification lost because the phone subscribed after the write & Medium &
+      High & The client subscribes to the status characteristic before writing and
+      filters notifications by session id. Implemented. \\
+    Backend and app disagree about the response shape & High & Medium &
+      One envelope for every application endpoint, two documented exceptions for
+      firmware, and a typed client that rejects unknown shapes. \\
+    Double payment through a double tap or retry & Medium & High &
+      Session row locked during payment; the second transaction sees
+      \code{PAYMENT\_PENDING} and is refused. \\
+    Concurrent session creation creates two sessions & Low & High &
+      The user row is locked for the transaction, serialising the read-then-write
+      check. \\
+    Coverage gate blocks iteration & Medium & Medium &
+      Tests are written with the feature, not afterwards; the gate is scoped to the
+      service layer so generated code does not dilute it. \\
+    Hardware unavailable for testing & High & Medium &
+      The serial-bridge transport allows the full backend flow without Wi-Fi; BLE
+      and servo behaviour remain documented as bench steps. \\
+    Secrets committed to the repository & Medium & High &
+      \code{.env} is ignored, sample values live in \code{.env.example}, device
+      secrets are hashed, and the admin key has no default. \\
+    Scope creep from payment or occupancy features & Medium & Medium &
+      Both were written into the non-goals and revisited only as future work. \\
+    Test environment differs from deployment & Low & High &
+      No H2 and no Testcontainers: tests run against PostgreSQL 16, the same image
+      the stack uses. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Risk register with the mitigation that was adopted.}
+  \label{tab:risks}
+\end{table}
+
+\section{Effort Estimation}
+
+A simple decomposition estimate was used: each module was sized by the number of
+distinct behaviours it had to support, and reviewed at the end of the sprint in
+which it was built. Table~\ref{tab:effort} records the planned effort and the
+measured size of the delivered code. The size figures are counted from the
+repository; the effort figures are planning estimates for a three-person team
+working part-time.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lrrX@{}}
+    \toprule
+    \textbf{Work package} & \textbf{Planned} & \textbf{Size} & \textbf{Notes} \\
+    & \textbf{person-days} & \textbf{(lines)} & \\
+    \midrule
+    Requirements and design & 6 & --- & specification, decision log, threat model \\
+    Backend domain and services & 14 & 3\,275 & Java, entities to controllers \\
+    Backend tests & 8 & 2\,240 & 15 classes, 118 tests, Mockito \\
+    Mobile application & 14 & 2\,278 & TypeScript, 11 screens, REST and BLE \\
+    Gate firmware & 10 & 1\,761 & Arduino, transports, actuator, poller \\
+    Build and test workflow & 6 & 261 & Compose profile and two shell scripts \\
+    Documentation and report & 8 & --- & six guides, API reference, this report \\
+    \midrule
+    \textbf{Total} & \textbf{66} & \textbf{9\,815} & \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Indicative effort distribution. Size counts exclude blank lines and
+  generated build output; scripts are shell, firmware is C/C++.}
+  \label{tab:effort}
+\end{table}
+
+The distribution is deliberately backend-heavy. The mobile application and the
+firmware are thin by design: neither holds a decision that the backend could make.
+The largest single risk-reduction item was not a feature but the test workflow,
+because it turned every later change into a verifiable one.

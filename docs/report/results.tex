@@ -1,0 +1,152 @@
+\chapter{Results and Discussion}
+
+\section{Output of the Working System}
+
+The application is usable end to end against the composed backend. The screens below
+show the driver's path from discovery to a closed history entry; every value on them
+comes from the backend, not from a fixture.
+
+\reportimage[0.55]{\ImgScreenDashboard}{Dashboard after sign-in: the active session
+and the vehicles held by the signed-in account.}{fig:screen-dashboard}
+
+\reportimage[0.55]{\ImgScreenDiscover}{Discovery: the gate advertising
+\code{DWARA-FAC-0001} appears in the scan, and its detail is fetched from the backend
+by facility code.}{fig:screen-discover}
+
+\reportimage[0.55]{\ImgScreenActive}{Active session: the entry gate button, the live
+status and the running fee.}{fig:screen-active}
+
+\reportimage[0.55]{\ImgScreenPayment}{Payment: the frozen amount after a successful
+mock payment, with the exit gate now available.}{fig:screen-payment}
+
+\reportimage[0.55]{\ImgScreenActivity}{Activity: the finished session listed from the
+paged history endpoint.}{fig:screen-activity}
+
+\subsection{End-to-end walkthrough}
+\label{sec:walkthrough}
+
+The walkthrough below was executed against the development stack with a seeded demo
+facility and one registered gate. Each step lists the observable result rather than
+the implementation behind it.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}clX@{}}
+    \toprule
+    \textbf{Step} & \textbf{Action} & \textbf{Observed result} \\
+    \midrule
+    1 & Register, then sign in & Account created; token stored; dashboard shown \\
+    2 & Add a vehicle & Plate and class accepted; vehicle appears on the dashboard \\
+    3 & Scan for gates & \code{DWARA-FAC-0001} listed; facility detail shows the
+      per-second rates \\
+    4 & Start a session & \code{CREATED}; the identifier is shown and the entry
+      button becomes available \\
+    5 & Open the entry gate & Backend returns \code{open}; the servo sweeps; status
+      becomes \code{PARKED} with an entry timestamp \\
+    6 & Wait and watch the fee & Amount increases once per second at the facility
+      rate \\
+    7 & Pay & Receipt with a \code{MOCK-} reference; amount frozen; session
+      \code{PAYMENT\_PENDING} \\
+    8 & Open the exit gate & Backend verifies the payment; gate opens; session
+      \code{EXITED} \\
+    9 & Open the activity screen & The finished session appears with its frozen
+      total \\
+    10 & Queue a remote \code{OPEN} (operator) & Gate executes on its next poll and
+      reports \code{sessionId: "remote"} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{End-to-end walkthrough.}
+  \label{tab:walkthrough}
+\end{table}
+
+Two behaviours in the walkthrough deserve emphasis because they demonstrate that the
+architecture is doing real work. In step 5 the application cannot open the gate: it
+only delivers the request, and the state change is visible because the backend
+recorded it. In step 8 the exit is granted by payment state, not by the phone, so the
+same session cannot be used to re-enter the facility.
+
+\section{Analysis Against Objectives}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lXl@{}}
+    \toprule
+    \textbf{Objective} & \textbf{Evidence} & \textbf{Outcome} \\
+    \midrule
+    Frictionless discovery & The gate advertises \code{DWARA-<facilityCode>}; the
+      application lists it from a scan and resolves details through
+      \code{GET /facilities/\{code\}}. & Met \\
+    Server-authoritative control & Every entry and exit is a
+      \code{POST /gate/validate} decision; the firmware has no rule that can open a
+      gate on its own, and fails closed on transport errors. & Met \\
+    Auditable per-second billing & Amounts are computed from
+      \code{entryTimestamp} and the facility rate, frozen at payment, and returned
+      with a receipt; the client never supplies a time or an amount. & Met \\
+    Safe lifecycle & One active session per user and per vehicle, guarded by a row
+      lock; stale sessions reaped; every illegal transition has a reason code and a
+      test. & Met \\
+    Three-surface deliverable & Backend, Expo application and ESP32 firmware in one
+      repository, with a shared configuration model and one Compose stack. & Met \\
+    Reproducible verification & One command builds, boots, tests and publishes
+      reports; 118 tests pass under a 100\% service-line coverage gate. & Met \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Objectives against evidence.}
+  \label{tab:objectives}
+\end{table}
+
+The only objectives that are met at the software boundary rather than on hardware are
+the firmware behaviours. The sketch compiles for the ESP32 target and the serial
+bypass allows the full backend flow to be exercised without Wi-Fi, but the servo
+sweep, the stall watchdog and the BLE round trip on a physical gate are documented
+bench procedures, not results measured in this environment. That is a limitation of
+the evaluation, not of the design, and it is the first item in the future-work list.
+
+\subsection*{Measured observations}
+
+Table~\ref{tab:verification} in the previous chapter records the verification
+results. Three numbers are worth reading as outcomes rather than as counts:
+
+\begin{itemize}
+  \item \textbf{118 automated tests, 0 failures, 100\% service-line coverage.} The
+        coverage gate is enforced in \code{verify}, so the figure cannot drift
+        silently.
+  \item \textbf{Sub-second backend responses in the local stack.} The authentication
+        contract run recorded responses between roughly 6\,ms and 155\,ms, with the
+        password-hashing calls in registration and login at the slow end of that
+        range.
+  \item \textbf{Deterministic gate timing.} The open hold is a fixed 8\,s and the
+        settle window 800\,ms, so the application's 15\,s round-trip budget leaves
+        ample margin even when the backend is slow.
+\end{itemize}
+
+\subsection*{Discussion}
+
+The most useful result is negative: the system works without any component that
+identifies a vehicle. A phone account, a session identifier and a server-side state
+machine were sufficient to authorise entry and exit, and the only hardware at the
+site is a microcontroller and a hobby servo. That is a meaningful cost reduction for
+a small facility, where a camera or an RFID reader per lane would dominate the
+budget.
+
+The second result is that centralising the decision simplified the edge. The firmware
+contains no pricing, no payment state and no notion of a user; it contains a timeout,
+a verdict and a servo. When the BLE client was fixed during development, the firmware
+did not change; when the grace window moved from payment time to gate time, the
+firmware did not change either. The cost of that simplification is a hard dependency
+on the backend at the moment of entry and exit, and a deliberate one: the gate fails
+closed, and the operator has a remote-open path for the post-payment case.
+
+The third result concerns testability. Because the payment provider, the gate client
+and the actuator are interfaces, the rule-heavy code is testable without a database
+or a servo. The classes with the most tests are the two that decide money and access,
+which is where defects would be most expensive.
+
+The design also has costs that should be stated plainly. A fixed-timer gate cannot
+detect tailgating; plaintext BLE means the session identifier is visible to anything
+in range; a single gate per facility means one queue serves both directions; and the
+mock payment provider means the settlement path has never seen a real failure. Each
+of these is a deliberate version-one boundary, and each has a concrete replacement in
+the next section.

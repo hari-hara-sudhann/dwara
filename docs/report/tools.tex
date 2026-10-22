@@ -1,0 +1,123 @@
+\chapter{Software Tools Used}
+
+Five tools did real work in this project rather than merely hosting it. For each,
+this chapter states the purpose, the specific use in \project{}, and the artefact
+that use produced. Screenshots are referenced through the image registry, so a
+replacement capture only needs a path change in \code{images.tex}.
+
+\section{Git and GitHub}
+
+\textbf{Purpose.} Distributed version control and a remote home for the repository,
+including history, branching and review.
+
+\textbf{Use in \project{}.} The repository holds all three deliverables so that a
+change to the API and the client that consumes it can be reviewed together. Work
+was done on feature branches and merged into the integration branch
+(\code{finish-backend}); the history records the progression from backend scaffolding
+to the complete system. Commit messages state the reason for a change, which makes
+the history usable as a design log. Git also enforces hygiene: \code{.env},
+\code{target/} and the generated \code{reports/} tree are ignored, so no secret or
+build artefact enters version control.
+
+\reportimage[0.92]{\ImgToolGit}{Git history and branch state in the repository.}{fig:tool-git}
+
+\section{Docker and Docker Compose}
+
+\textbf{Purpose.} Reproducible build and runtime environments, and a single command
+that brings up the database, the application and the test runner.
+
+\textbf{Use in \project{}.} The backend is built in a multi-stage image: a Maven
+stage resolves dependencies and packages \code{target/app.jar}, a runtime stage runs
+it as a non-root user, and a third stage reuses the build image as the test runner.
+Compose defines PostgreSQL with a health check, the backend with a health check and a
+dependency on the database, and a test-only profile that runs \code{mvn verify} and
+writes reports back to the host. The test project uses its own compose project name,
+ports and volume, so a verification run never disturbs a development stack.
+
+\reportimage[0.92]{\ImgToolDocker}{Compose stack in operation and the test workflow output.}{fig:tool-docker}
+
+\section{Postman}
+
+\textbf{Purpose.} Request-level API exploration and a durable, executable record of
+the API contract.
+
+\textbf{Use in \project{}.} The collection stored at
+\path{src/test/postman/dwara-auth.postman_collection.json} concentrates on the
+authentication controller: registration, duplicate registration, login, a wrong
+password, the authenticated profile call and the unauthenticated profile call. It
+contains six requests and nineteen assertions, and it chains state: the registration
+request generates a unique e-mail and stores the returned user id, the login request
+stores the token, and the profile request proves that the token resolves to the same
+account. A collection pre-request script makes the suite repeatable, so the same
+collection can be run from the Postman runner or from Newman without leaving
+duplicate accounts behind.
+
+\reportimage[0.92]{\ImgToolPostman}{The authentication collection with its assertions in the Postman runner.}{fig:tool-postman}
+
+\section{Visual Studio Code}
+
+\textbf{Purpose.} One editor for Java, TypeScript, shell and Arduino sources, with
+language support that catches errors before a build.
+
+\textbf{Use in \project{}.} VS Code hosted the backend, the Expo application and the
+firmware side by side. The Java extension provided navigation across controller,
+service and repository layers; the TypeScript server enforced the types shared
+between the API client and the screens; the integrated terminal ran the Maven
+wrapper, the Compose stack and \code{arduino-cli}. Keeping all three surfaces in one
+workspace made it practical to change a DTO and its TypeScript type in the same
+edit.
+
+\reportimage[0.92]{\ImgToolVsCode}{The monorepo open in VS Code, with the backend and the application in one
+  workspace.}{fig:tool-vscode}
+
+\section{Arduino CLI and Arduino IDE}
+
+\textbf{Purpose.} Compile and flash the ESP32 firmware, and read the serial monitor
+during bench testing.
+
+\textbf{Use in \project{}.} The firmware is compiled headlessly with
+\code{arduino-cli} against the ESP32 core and the Huge APP partition scheme, which
+makes a compile check possible without opening a GUI:
+
+\begin{lstlisting}[style=bash,caption={Firmware compile check used after every firmware
+change.},label={lst:compile}]
+arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+  firmware/dwara-gate
+\end{lstlisting}
+
+The IDE was used for flashing and for the serial monitor at 115200 baud, where the
+boot banner reports the selected transport, the servo pin and the advertised BLE
+name. The same monitor carries the framed serial-bridge traffic used in the Wi-Fi-less
+demonstration.
+
+\reportimage[0.92]{\ImgToolArduino}{Firmware compile and the gate's serial output during a bench run.}{fig:tool-arduino}
+
+\section{Summary}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lXXX@{}}
+    \toprule
+    \textbf{Tool} & \textbf{Purpose} & \textbf{Phase of SDLC} &
+    \textbf{Usage in this project} \\
+    \midrule
+    Git / GitHub & Version control and collaboration & All phases &
+      Monorepo, feature branches, reviewable history, ignored secrets and build
+      output \\
+    Docker / Compose & Reproducible environments & Implementation, testing,
+      deployment & Multi-stage backend image, PostgreSQL service, test profile,
+      bind-mounted reports \\
+    Postman & API contract testing & Testing & Six-request authentication
+      collection with nineteen chained assertions; runnable in the app or Newman \\
+    VS Code & Editing and static analysis & Design, implementation, testing &
+      Java navigation, TypeScript checking, integrated terminal for Maven, Compose
+      and Arduino CLI \\
+    Arduino CLI / IDE & Firmware build and bench diagnostics & Implementation,
+      testing & Headless compile check, flashing, serial monitor and serial-bridge
+      traffic \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Tool summary.}
+  \label{tab:tool-summary}
+\end{table}

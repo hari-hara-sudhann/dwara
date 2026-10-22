@@ -17,6 +17,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -77,6 +78,34 @@ class UserServiceTest {
         assertEquals(UserRole.USER, saved.getValue().getUserRole());
     }
 
+    @Test
+    void register_storesTheNameTheUserSupplied() {
+        when(userRepository.existsByEmail("a@b.c")).thenReturn(false);
+        when(passwordEncoder.encode("hunter2")).thenReturn("BCRYPT-HASH");
+        RegistrationDto dto = registration("a@b.c", "hunter2");
+        dto.setName("Verify User");
+
+        ResponseObject<RegisrationSuccessDto> result = service.register(dto);
+
+        assertEquals("Verify User", result.getResponse().getName());
+
+        ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(saved.capture());
+        assertEquals("Verify User", saved.getValue().getName());
+    }
+
+    @Test
+    void register_fallsBackToEmailWhenNoNameIsSupplied() {
+        when(userRepository.existsByEmail("a@b.c")).thenReturn(false);
+        when(passwordEncoder.encode("hunter2")).thenReturn("BCRYPT-HASH");
+        RegistrationDto dto = registration("a@b.c", "hunter2");
+        dto.setName("  ");
+
+        ResponseObject<RegisrationSuccessDto> result = service.register(dto);
+
+        assertEquals("a@b.c", result.getResponse().getName());
+    }
+
     // --------------------------------------------------------------- login --
 
     @Test
@@ -114,6 +143,28 @@ class UserServiceTest {
 
         assertTrue(result.getSuccess());
         assertEquals("signed.jwt", result.getResponse().jwt());
+    }
+
+    // ------------------------------------------------------------- findUser --
+
+    @Test
+    void findUser_returnsTheProfileBehindTheToken() {
+        User user = user("BCRYPT-HASH");
+        user.setName("Hari");
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(user));
+
+        ResponseObject<RegisrationSuccessDto> result = service.findUser(USER_ID);
+
+        assertTrue(result.getSuccess());
+        assertEquals(USER_ID, result.getResponse().getUserId());
+        assertEquals("Hari", result.getResponse().getName());
+    }
+
+    @Test
+    void findUser_refusesATokenForADeletedUser() {
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.empty());
+
+        assertFalse(service.findUser(USER_ID).getSuccess());
     }
 
     // ------------------------------------------------------------- helpers --

@@ -1,0 +1,246 @@
+\chapter{Testing}
+\label{ch:testing}
+
+\section{Test Plan and Strategy}
+
+Testing followed the shape of the system: business rules were tested below HTTP,
+contracts were tested at HTTP, and the pieces that cannot run on a laptop were
+verified by compilation and by a documented bench procedure.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lX@{}}
+    \toprule
+    \textbf{Level} & \textbf{Scope and technique} \\
+    \midrule
+    Service unit tests & Eleven classes cover the service layer with JUnit 5 and
+      Mockito. Repositories, the payment provider, the gate client and the clock
+      boundaries are replaced by doubles, so a rule can be tested without a database
+      or hardware. \\
+    Context test & One Spring Boot context load against the test profile, which
+      proves the application wires up with the real configuration. \\
+    Persistence test & One repository test for the payment lookup query, executed
+      against PostgreSQL rather than an in-memory substitute. \\
+    DTO and configuration tests & The response envelope serialises its payload as
+      \code{data}, and the session timing properties bind ISO-8601 durations. \\
+    Contract tests & A Postman collection exercises the authentication controller
+      over HTTP, including the refusal paths. \\
+    Workflow tests & The Compose test workflow is itself verified: the production
+      image must become healthy before the suite starts, and reports must survive a
+      failing run. \\
+    Static checks & TypeScript type-check for the mobile application and a headless
+      compile of the firmware for the ESP32 target. \\
+    Bench tests & Servo sweep, stall watchdog, BLE round trip and serial bridge,
+      executed manually on hardware with a documented procedure. \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Test levels.}
+  \label{tab:test-levels}
+\end{table}
+
+\subsection*{Environment}
+
+Tests run in the \code{test} container of the Compose project. The container waits
+for PostgreSQL to become healthy and for the production image to report healthy at
+\code{/actuator/health}; the latter is a readiness gate, not a smoke test, and exists
+to prove that the deployment configuration boots. The test profile points at a
+separate database, \code{dwara\_test}, created by an initialisation script, and uses
+\code{create-drop} so every run starts from an empty schema. JWT secret, token
+lifetime and administrator key are generated per run and injected as environment
+variables; the committed values in the test profile are explicitly test-scope.
+
+No H2 and no Testcontainers are used. Both would have been convenient and both would
+have tested a different database from the one that ships.
+
+\reportimage[0.9]{\ImgTestWorkflow}{The verification pipeline. A failing suite still
+produces both report trees, because collection happens after the exit status is
+captured.}{fig:test-workflow}
+
+\subsection*{Coverage policy}
+
+JaCoCo is scoped to \code{me/hari/dwara/services/**} and the gate is a
+\code{COVEREDRATIO} of 1.00 on lines, enforced in the \code{verify} phase. Scoping is
+deliberate: entities, DTOs and mappers are mostly generated or declarative, and
+including them would dilute the number without adding evidence. Enforcing the gate in
+\code{verify} rather than in \code{package} means the Docker image build is not
+blocked by coverage, while the test workflow is.
+
+\section{Test Cases}
+
+Table~\ref{tab:test-cases} lists the representative cases, including the refusals
+that matter most. ``Pass'' means the expected and observed outputs matched in the
+automated suite; the two firmware cases are marked as requiring hardware because
+their evidence is a documented bench procedure rather than an executed test in this
+environment.
+
+\begin{table}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}Xc@{}}
+    \toprule
+    \textbf{ID} & \textbf{Module} & \textbf{Input / action} &
+    \textbf{Expected output} & \textbf{Observed output} & \textbf{Status} \\
+    \midrule
+    TC-01 & Auth & register with a new e-mail & \code{success: true},
+      \code{data.userId} present & envelope with generated id and no password field &
+      Pass \\
+    TC-02 & Auth & register the same e-mail twice & \code{success: false},
+      ``User already exists.'' & refusal in the envelope & Pass \\
+    TC-03 & Auth & login with correct credentials & \code{success: true},
+      three-part JWT & JWT returned and accepted by \code{/auth/me} & Pass \\
+    TC-04 & Auth & login with a wrong password & refusal, no token & refusal, no
+      token & Pass \\
+    TC-05 & Auth & \code{/auth/me} with a valid token & profile of the same account &
+      matching user id and e-mail & Pass \\
+    TC-06 & Session & start a session at an active facility & \code{CREATED}, UUID
+      returned & \code{CREATED} with a UUID & Pass \\
+    TC-07 & Session & start twice with the same user & refused, first session kept &
+      ``User already has an active parking session.'' & Pass \\
+    TC-08 & Session & same user, second vehicle & refused (per-user rule) & refusal &
+      Pass \\
+    TC-09 & Billing & fee of a parked session & rate \(\times\) elapsed seconds &
+      live amount increases per second & Pass \\
+    TC-10 & Billing & pay a parked session & \code{PAYMENT\_PENDING}, frozen amount,
+      receipt & receipt with \code{MOCK-} reference & Pass \\
+    TC-11 & Billing & pay the same session twice & refused, single payment row &
+      ``Only a parked session can be paid for.'' & Pass \\
+    TC-12 & Gate & exit before payment & \code{keep\_closed} /
+      \code{PAYMENT\_REQUIRED} & same verdict and reason & Pass \\
+    TC-13 & Gate & exit after payment & \code{open}, session \code{EXITED} & same &
+      Pass \\
+    TC-14 & Gate & re-approach after exit & \code{open} inside the grace window,
+      \code{keep\_closed} outside & both boundaries honoured & Pass \\
+    TC-15 & Sweep & session older than the stale threshold & \code{ABORTED} &
+      aborted, slot released & Pass \\
+    TC-16 & Device & validate with a wrong device secret & 401 & 401 with the
+      standard envelope & Pass \\
+    TC-17 & Admin & create a facility without the admin key & 401 & 401 & Pass \\
+    TC-18 & History & list sessions with page and status & own sessions only, newest
+      first, paging metadata & matching page metadata & Pass \\
+    TC-19 & Firmware & malformed BLE payload & \code{DENIED/MALFORMED\_COMMAND} &
+      documented bench procedure & Hardware \\
+    TC-20 & Firmware & blocked servo during a sweep & \code{FAULT}, PWM released &
+      documented bench procedure & Hardware \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Representative test cases. The complete suite is enumerated in
+  \code{reports/junit} after any run.}
+  \label{tab:test-cases}
+\end{table}
+
+\section{Test Results and Bug Log}
+
+\subsection*{Automated suite}
+
+The suite contains 118 tests in 15 classes, all of which pass. The distribution
+follows the risk: the session service and the gate service carry the most rules and
+therefore the most tests.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}Xrl@{}}
+    \toprule
+    \textbf{Test class} & \textbf{Tests} & \textbf{Area} \\
+    \midrule
+    \code{ParkingSessionServiceTest} & 31 & lifecycle, billing, anti-abuse, history \\
+    \code{GateControllerServiceImplTest} & 21 & entry/exit verdicts, grace window \\
+    \code{VehicleServiceTest} & 13 & ownership-scoped CRUD \\
+    \code{ParkingFacilityServiceTest} & 12 & creation, pricing, status \\
+    \code{UserServiceTest} & 9 & registration, login, profile \\
+    \code{GateCommandServiceTest} & 7 & queue, poll and acknowledgement \\
+    \code{DeviceAuthenticationServiceTest} & 7 & device secret verification \\
+    \code{PollingGateControllerClientTest} & 6 & gate client behaviour \\
+    \code{DeviceProvisioningServiceImplTest} & 3 & secret generation and hashing \\
+    \code{ScheduledSessionAborterTest} & 2 & sweep trigger \\
+    \code{MockPaymentServiceTest} & 2 & provider contract \\
+    \code{SessionPropertiesTest} & 2 & duration binding \\
+    \code{PaymentRepositoryQueryTest} & 1 & payment lookup query \\
+    \code{DwaraApplicationTests} & 1 & context load \\
+    \code{ResponseObjectTest} & 1 & envelope serialisation \\
+    \midrule
+    \textbf{Total} & \textbf{118} & \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Automated test inventory.}
+  \label{tab:test-inventory}
+\end{table}
+
+\reportimage[0.8]{\ImgCoverage}{JaCoCo report for the service package: 100\% line
+coverage under the enforced gate.}{fig:coverage}
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{4.6cm}@{}}
+    \toprule
+    \textbf{Check} & \textbf{Command or artefact} & \textbf{Result} \\
+    \midrule
+    Backend suite & \code{mvn verify} in the test container & 118 tests, 0 failures,
+      0 errors \\
+    Coverage gate & JaCoCo \code{check}, service package, line ratio & 100\%,
+      gate passed \\
+    API contract & Postman collection, six requests, nineteen assertions &
+      positive and refusal paths pass; the unauthenticated probe records the
+      public-namespace boundary \\
+    Mobile types & \code{npm --prefix frontend run typecheck} & clean \\
+    Firmware build & \code{arduino-cli compile} for ESP32, Huge APP & compiles \\
+    Health gate & \code{curl /actuator/health} & \code{\{"status":"UP"\}} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Verification summary.}
+  \label{tab:verification}
+\end{table}
+
+\subsection*{Defect log}
+
+The defects below were found during implementation, each by a specific check, and
+closed before the final verification. They are recorded because the fix in each case
+is now part of the design rather than a patch.
+
+\begin{table}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabularx}{\textwidth}{@{}lXXl@{}}
+    \toprule
+    \textbf{ID} & \textbf{Symptom} & \textbf{Root cause and resolution} &
+    \textbf{Status} \\
+    \midrule
+    D-01 & Application failed at startup on schema creation & \code{user} is
+      reserved in PostgreSQL; the entity is mapped to \code{users}. & Closed \\
+    D-02 & Device calls were rejected as malformed tokens & The JWT filter parsed any
+      bearer value; it now parses only three-segment tokens and leaves the rest
+      anonymous. & Closed \\
+    D-03 & Gate sometimes never reported an outcome & The client subscribed after
+      writing; it now subscribes first and filters by session id. & Closed \\
+    D-04 & Grace re-open expired while a user was still walking to the gate & The
+      window was measured from payment; \code{exitGateOpenedAt} was added and the
+      window is measured from the gate opening. & Closed \\
+    D-05 & Two concurrent start requests produced two sessions & Read-then-write race;
+      the user row is now locked for the transaction. & Closed \\
+    D-06 & A retried payment could charge twice & No state guard under concurrency;
+      the session row is now locked and the state is re-checked. & Closed \\
+    D-07 & A jammed servo stayed energised & The watchdog closed the angle but kept
+      the PWM attached; it now detaches the signal and latches \code{FAULT}. &
+      Closed \\
+    D-08 & A remote poll could delay an auto-close & The poller ran during movement;
+      it now polls only while the gate is closed and the actuator is idle. &
+      Closed \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Defect log. Each entry is closed and covered by a regression test or a
+  documented bench check.}
+  \label{tab:defects}
+\end{table}
+
+\subsection*{Interpretation}
+
+Three observations are worth drawing from the numbers. First, the rule-heavy classes
+attract the tests: two services account for 52 of 118 tests, which matches where the
+failure modes live. Second, the coverage gate changed behaviour rather than merely
+reporting it --- a new branch in a service could not be merged without a test, so
+coverage stayed at 100\% without a cleanup phase. Third, the checks that caught the
+most consequential defects were not unit tests but integration-shaped ones: the
+context load caught the reserved-word problem, and the container workflow caught the
+health-gate dependency order.

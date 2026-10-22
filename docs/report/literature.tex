@@ -1,0 +1,136 @@
+\chapter{Literature Survey and Existing Systems}
+
+\section{Review of Existing Systems}
+
+Parking technology has evolved along four largely independent lines: mechanical
+ticketing, vehicle-bound electronic tags, camera-based identification, and
+IoT occupancy sensing. Each solves a real problem, and each leaves a specific gap
+that shapes the design of \project{}.
+
+\subsection{Manual ticketing and locally controlled barriers}
+
+The conventional facility issues a ticket at entry, reads it at exit and charges at
+a kiosk. The ticket is anonymous, so the system cannot associate a stay with a
+person or a vehicle; revenue protection depends on the barrier and on staff. The
+controller decides locally, which means a faulty loop detector, a lost ticket or a
+power interruption becomes an operational incident rather than a query against a
+record. This model is well understood and cheap per site, but it cannot support
+account-based billing, history or remote operation without additional hardware.
+
+\subsection{RFID tags and electronic toll collection}
+
+Vehicle-bound RFID is the dominant model for tolling. India's National Electronic
+Toll Collection programme issues a FASTag sticker that a fixed reader activates as
+the vehicle approaches; the tag identifier is mapped to a prepaid or linked account
+and the toll is deducted centrally \cite{npci2024}. The strengths are speed and
+interoperability: the tag is passive, the reader is overhead, and the settlement is
+centralised. The limitation for parking is structural. The tag identifies a
+\emph{vehicle}, not a session, and the charge is a fixed toll for a crossing. A
+parking fee depends on duration and on payment state, so an RFID-only design still
+needs a separate session and billing system behind it. It also requires a reader at
+every lane and a tag in every vehicle.
+
+\subsection{Camera-based number-plate recognition}
+
+ANPR systems photograph the plate, extract the characters and match them against a
+record. They remove the tag but introduce a heavy dependency: illumination,
+weather, plate formats and camera placement all affect accuracy, and each lane needs
+a camera plus compute. Privacy is a further concern, because plate images are
+personal data. The approach answers ``which vehicle is this?'' but not ``is this
+driver allowed to leave, and has the fee been paid?'' --- those questions still need
+an application layer.
+
+\subsection{IoT occupancy sensing and smart-parking surveys}
+
+A large body of work places a sensor at every bay --- ultrasonic, magnetometer,
+infrared or camera --- and reports occupancy to a server. Recent surveys catalogue
+these architectures, communication standards and business models
+\cite{alam2023,biyik2021}. The value is guidance to a free space and utilisation
+analytics. The cost is one device per bay, which dominates deployment economics for
+a small facility, and the sensing problem is orthogonal to the access-control
+problem: knowing that a bay is free does not tell a barrier whether to open.
+
+\subsection{BLE beacons and phone-based parking}
+
+BLE has been used mainly for proximity. Mackey et al.\ pair each parking spot with a
+BLE beacon and use particle filtering on received signal strength to decide which
+spot a phone has entered, with an automated payment scheme built on top
+\cite{mackey2020}. The result demonstrates that commodity phones and low-cost
+beacons are sufficient for reliable proximity decisions. It also concentrates the
+intelligence on the phone and the cloud rather than on the barrier, and it assumes
+one beacon per spot.
+
+\subsection{Commercial mobile parking applications}
+
+App-based parking payment (for example, phone applications that start and stop a
+parking stay) is now common. These systems digitise the payment record but usually
+leave enforcement and the barrier with the operator; the phone proves payment, and a
+human or a camera checks it. They validate the central idea of \project{} --- that a
+phone account is a usable parking credential --- while leaving the gate itself
+unchanged.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}lXXXX@{}}
+    \toprule
+    \textbf{Approach} & \textbf{Credential} & \textbf{Hardware per site} &
+    \textbf{Billing basis} & \textbf{Main gap} \\
+    \midrule
+    Ticket + local barrier & Paper ticket & Barrier, dispenser, kiosk &
+      Fixed tariff per stay & Anonymous; no account or history \\
+    RFID / FASTag & Vehicle tag & Reader per lane, tags per vehicle &
+      Fixed charge per crossing & Vehicle-bound; no duration model \\
+    ANPR cameras & Number plate & Camera + compute per lane &
+      Whatever the backend adds & Cost, accuracy, privacy \\
+    Bay sensors & None & One sensor per bay & Time (computed centrally) &
+      Does not control access; cost per bay \\
+    BLE beacons (research) & Phone app & One beacon per spot &
+      Usage time & Assumes per-spot beacons \\
+    Mobile payment apps & Phone account & None at the gate &
+      Time & Barrier and enforcement stay manual \\
+    \textbf{\project{}} & \textbf{Phone account + JWT} & \textbf{One ESP32 +
+      one servo} & \textbf{Per second, backend clock} &
+      \textbf{Plaintext BLE; single gate (v1)} \\
+    \bottomrule
+  \end{tabularx}
+  \caption{Comparison of existing approaches with the proposed system.}
+  \label{tab:comparison}
+\end{table}
+
+\section{Gaps Identified and Proposed Solution}
+
+Table~\ref{tab:comparison} makes the gaps concrete. Five matter for this project.
+
+\begin{enumerate}
+  \item \textbf{The barrier is trusted too much.} In ticketing, RFID and camera
+        systems the local controller decides whether to open. \project{} moves the
+        decision to the backend and reduces the controller to a courier with a
+        device credential. A compromised phone can annoy the backend; it cannot open
+        a gate.
+  \item \textbf{Identity is attached to the wrong object.} Tags and plates identify
+        vehicles, and tickets identify nothing. \project{} attaches identity to the
+        account behind the phone, and then binds that account to a vehicle at
+        session creation.
+  \item \textbf{Duration is an afterthought.} Toll-style charging is per crossing,
+        and bay sensors compute time but do not gate access. \project{} treats the
+        duration as the primary quantity: the clock starts when the backend
+        authorises entry and stops when payment succeeds.
+  \item \textbf{Per-bay hardware does not scale down.} A small facility cannot
+        justify a sensor at every bay. \project{} needs one ESP32 and one servo for
+        the whole site and no per-bay device.
+  \item \textbf{Verification is rarely reproducible.} Student and prototype
+        projects often demonstrate a flow manually. \project{} ships a containerised
+        verification workflow with a coverage gate and published reports, so the
+        evidence can be regenerated by anyone with Docker.
+\end{enumerate}
+
+The proposed system therefore combines three ideas that exist separately in the
+literature: BLE proximity discovery from research beacons \cite{mackey2020},
+account-based settlement from tolling \cite{npci2024}, and server-side session
+management from IoT parking platforms \cite{alam2023}. Its contribution is the
+arrangement: a phone-carried session identifier, a single gate that re-validates
+every action, and a lifecycle that makes duration and payment the only inputs to
+the exit decision.
+
+
